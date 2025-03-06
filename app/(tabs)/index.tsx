@@ -2,6 +2,7 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, useWindowD
 import { useState, useEffect } from 'react';
 import { router } from 'expo-router';
 import { Clock, Calendar, TrendingUp, CirclePlay as PlayCircle, Timer, ChevronRight, Terminal } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '@/lib/supabase';
 
 interface SessionStats {
@@ -158,32 +159,70 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.statsConsole}>
-          <View style={styles.consoleHeader}>
-            <Terminal size={16} color="#6366f1" />
-            <Text style={styles.consoleTitle}>Meditation Stats</Text>
+        <View style={styles.statsSection}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Your Progress</Text>
           </View>
-          <View style={styles.consoleContent}>
-            <Text style={styles.consoleLine}>
-              <Text style={styles.consolePrompt}>$</Text>
-              <Text style={styles.consoleCommand}> stats.sessions</Text>
-              <Text style={styles.consoleOutput}> → {stats.totalSessions} total</Text>
-            </Text>
-            <Text style={styles.consoleLine}>
-              <Text style={styles.consolePrompt}>$</Text>
-              <Text style={styles.consoleCommand}> stats.duration</Text>
-              <Text style={styles.consoleOutput}> → {stats.totalMinutes} minutes</Text>
-            </Text>
-            <Text style={styles.consoleLine}>
-              <Text style={styles.consolePrompt}>$</Text>
-              <Text style={styles.consoleCommand}> stats.average</Text>
-              <Text style={styles.consoleOutput}> → {stats.averageSessionLength} min/session</Text>
-            </Text>
-            <Text style={styles.consoleLine}>
-              <Text style={styles.consolePrompt}>$</Text>
-              <Text style={styles.consoleCommand}> stats.streak</Text>
-              <Text style={styles.consoleOutput}> → {stats.streak} days</Text>
-            </Text>
+          <View style={styles.statsGrid}>
+            <LinearGradient
+              colors={['#4338ca', '#6366f1']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.statCard}
+            >
+              <View style={styles.statIconContainer}>
+                <Calendar size={20} color="#fff" />
+              </View>
+              <View style={styles.statTextContainer}>
+                <Text style={styles.statValue}>{stats.totalSessions}</Text>
+                <Text style={[styles.statLabel, styles.statLabelLight]}>Total Sessions</Text>
+              </View>
+            </LinearGradient>
+            
+            <LinearGradient
+              colors={['#7c3aed', '#8b5cf6']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.statCard}
+            >
+              <View style={styles.statIconContainer}>
+                <Clock size={20} color="#fff" />
+              </View>
+              <View style={styles.statTextContainer}>
+                <Text style={styles.statValue}>{stats.totalMinutes}</Text>
+                <Text style={[styles.statLabel, styles.statLabelLight]}>Minutes Meditated</Text>
+              </View>
+            </LinearGradient>
+            
+            <LinearGradient
+              colors={['#0ea5e9', '#38bdf8']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.statCard}
+            >
+              <View style={styles.statIconContainer}>
+                <Timer size={20} color="#fff" />
+              </View>
+              <View style={styles.statTextContainer}>
+                <Text style={styles.statValue}>{stats.averageSessionLength}</Text>
+                <Text style={[styles.statLabel, styles.statLabelLight]}>Avg. Minutes/Session</Text>
+              </View>
+            </LinearGradient>
+            
+            <LinearGradient
+              colors={['#10b981', '#34d399']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.statCard}
+            >
+              <View style={styles.statIconContainer}>
+                <TrendingUp size={20} color="#fff" />
+              </View>
+              <View style={styles.statTextContainer}>
+                <Text style={styles.statValue}>{stats.streak}</Text>
+                <Text style={[styles.statLabel, styles.statLabelLight]}>Day Streak</Text>
+              </View>
+            </LinearGradient>
           </View>
         </View>
 
@@ -199,11 +238,15 @@ export default function HomeScreen() {
             horizontal 
             showsHorizontalScrollIndicator={false}
             style={styles.recommendationsScroll}
+            contentContainerStyle={styles.recommendationsContainer}
           >
             {recommendedMixes.map((mix) => (
               <TouchableOpacity 
                 key={mix.id}
-                style={[styles.recommendationCard, { width: width * 0.7 }]}
+                style={[
+                  styles.recommendationCard,
+                  { width: Math.min(width * 0.7, 400) }
+                ]}
                 onPress={() => router.push({
                   pathname: '/(tabs)/mixer',
                   params: { mixId: mix.id }
@@ -244,7 +287,7 @@ export default function HomeScreen() {
 
             <TouchableOpacity 
               style={styles.quickActionCard}
-              onPress={() => router.push('/(tabs)/profile')}
+              onPress={() => router.push('/(tabs)/stats')}
             >
               <Text style={styles.quickActionTitle}>View Progress</Text>
               <Text style={styles.quickActionDescription}>
@@ -296,42 +339,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  statsConsole: {
-    margin: 20,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  consoleHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 12,
-    backgroundColor: '#262626',
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
-  },
-  consoleTitle: {
-    color: '#6366f1',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  consoleContent: {
-    padding: 16,
-  },
-  consoleLine: {
-    fontFamily: 'monospace',
-    marginBottom: 8,
-  },
-  consolePrompt: {
-    color: '#6366f1',
-    fontWeight: '600',
-  },
-  consoleCommand: {
-    color: '#818cf8',
-  },
-  consoleOutput: {
-    color: '#10b981',
+  statsSection: {
+    padding: 20,
   },
   section: {
     marginBottom: 24,
@@ -355,11 +364,15 @@ const styles = StyleSheet.create({
   recommendationsScroll: {
     paddingLeft: 20,
   },
+  recommendationsContainer: {
+    paddingRight: 20,
+  },
   recommendationCard: {
     backgroundColor: '#1a1a1a',
     borderRadius: 16,
     marginRight: 16,
     overflow: 'hidden',
+    maxWidth: 400,
   },
   recommendationImage: {
     width: '100%',
@@ -405,5 +418,54 @@ const styles = StyleSheet.create({
     color: '#666',
     fontSize: 14,
     lineHeight: 20,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 16,
+    padding: 4,
+  },
+  statCard: {
+    flex: 1,
+    minWidth: '45%',
+    borderRadius: 16,
+    padding: 12,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  statTextContainer: {
+    flexDirection: 'column',
+  },
+  statIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 2,
+  },
+  statLabel: {
+    fontSize: 12,
+    textAlign: 'left',
+  },
+  statLabelLight: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '500',
   },
 });
