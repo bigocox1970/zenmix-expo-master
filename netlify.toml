@@ -1,5 +1,5 @@
 [build]
-  command = "npm run build:netlify"
+  # Skip build command since we're deploying pre-built files
   publish = "dist"
 
 [build.environment]
