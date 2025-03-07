@@ -1,12 +1,13 @@
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Platform, Animated, Modal } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, FlatList, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useRef } from 'react';
 import { Audio } from 'expo-av';
-import { Plus, Play, Pause, Volume2, Trash2, Music2, ArrowRight, ArrowLeft, Check, X } from 'lucide-react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { Plus, Play, Pause, Save, Volume2, Trash2, Music2, Search, X } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
-import React from 'react';
+import { useLocalSearchParams, router } from 'expo-router';
+import { TabletModal } from '@/components/TabletModal';
 
+// Track interface
 interface Track {
   id: string;
   name: string;
@@ -14,456 +15,1105 @@ interface Track {
   isPlaying: boolean;
   audioTrackId?: string;
   url?: string;
+  loopTime: number; // Loop time in seconds
 }
 
-interface MixSettings {
+// Library track interface
+interface LibraryTrack {
+  id: string;
   name: string;
-  duration: number;
-  isPublic: boolean;
+  category: string;
+  url: string;
+  is_built_in: boolean;
 }
 
-interface AudioRef {
-  element?: HTMLAudioElement;
-  sound?: Audio.Sound;
-}
-
-interface TrackSettings {
-  volume: number;
-  loop: boolean;
-  loopStart: number;
-  loopEnd: number;
-  eq: {
-    low: number;
-    mid: number;
-    high: number;
+// Add interface for track progress
+interface TrackProgress {
+  [key: string]: {
+    current: number;
+    duration: number;
+    percent: number;
   };
 }
 
-const DURATIONS = [5, 10, 15, 20, 30, 45, 60];
+// Add an interface for the audio references
+interface AudioRef {
+  element?: HTMLAudioElement;
+  sound?: Audio.Sound;
+  loopHandler?: EventListener;
+}
 
 export default function MixerScreen() {
-  const params = useLocalSearchParams<{
-    selectedTrackId: string;
-    selectedTrackName: string;
-    mixerTrackId: string;
-    mixId: string;
-    mixName: string;
-    mixDuration: string;
-    mixIsPublic: string;
-    mixTracks: string;
-  }>();
-
-  const [step, setStep] = useState(0);
-  const [settings, setSettings] = useState<MixSettings>({
+  const params = useLocalSearchParams();
+  
+  // Log params for debugging
+  useEffect(() => {
+    console.log('Mixer params:', JSON.stringify(params, null, 2));
+  }, [params]);
+  
+  const [settings, setSettings] = useState({
     name: '',
     duration: 30,
     isPublic: false,
   });
 
-  const [tracks, setTracks] = useState<Track[]>(
-    Array(8).fill(null).map((_, i) => ({
-      id: `track-${i}`,
-      name: '',
-      volume: 1,
-      isPlaying: false,
-    }))
-  );
+  // Initialize with only 4 tracks
+  const [tracks, setTracks] = useState<Track[]>([
+    { id: 'track-0', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+    { id: 'track-1', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+    { id: 'track-2', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+    { id: 'track-3', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+  ]);
 
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
-  const [selectedTrack, setSelectedTrack] = useState<string | null>(null);
-  const [trackSettings, setTrackSettings] = useState<{ [key: string]: TrackSettings }>({});
-  const [showTrackSettings, setShowTrackSettings] = useState(false);
-  const slideAnim = useRef(new Animated.Value(0)).current;
+  const [masterProgress, setMasterProgress] = useState(0);
+  const [isMasterPlaying, setIsMasterPlaying] = useState(false);
+  const [showSoundPicker, setShowSoundPicker] = useState(false);
+  const [selectedTrackIndex, setSelectedTrackIndex] = useState<number | null>(null);
+  const [libraryTracks, setLibraryTracks] = useState<LibraryTrack[]>([]);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeCategory, setActiveCategory] = useState('all');
+  const [playingPreviewId, setPlayingPreviewId] = useState<string | null>(null);
   const audioRefs = useRef<{ [key: string]: AudioRef }>({});
+  const progressInterval = useRef<NodeJS.Timeout>();
+  const [trackProgress, setTrackProgress] = useState<TrackProgress>({});
+  const progressTimers = useRef<{ [key: string]: NodeJS.Timeout }>({});
+  const [showVolumeSlider, setShowVolumeSlider] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Initialize track settings
-    const initialSettings: { [key: string]: TrackSettings } = {};
-    tracks.forEach(track => {
-      initialSettings[track.id] = {
-        volume: track.volume,
-        loop: true,
-        loopStart: 0,
-        loopEnd: 100,
-        eq: {
-          low: 0,
-          mid: 0,
-          high: 0
-        }
-      };
-    });
-    setTrackSettings(initialSettings);
-  }, []);
-
-  const handleTrackPress = (trackId: string) => {
-    setSelectedTrack(trackId);
-    setShowTrackSettings(true);
+  // Format time in MM:SS
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const updateTrackSettings = (trackId: string, updates: Partial<TrackSettings>) => {
-    setTrackSettings(prev => ({
-      ...prev,
-      [trackId]: {
-        ...prev[trackId],
-        ...updates
-      }
-    }));
-
-    // Update audio if playing
-    const audioRef = audioRefs.current[trackId];
-    if (Platform.OS === 'web' && audioRef?.element) {
-      if ('volume' in updates) {
-        audioRef.element.volume = updates.volume!;
-      }
-    } else if (audioRef?.sound) {
-      if ('volume' in updates) {
-        audioRef.sound.setVolumeAsync(updates.volume!);
-      }
+  // Add a new track (up to 8 total)
+  const addNewTrack = () => {
+    if (tracks.length < 8) {
+      setTracks(prev => [
+        ...prev,
+        { id: `track-${prev.length}`, name: '', volume: 1, isPlaying: false, loopTime: 30 },
+      ]);
     }
   };
 
-  const renderTrackSettings = () => {
-    if (!selectedTrack) return null;
-    const track = tracks.find(t => t.id === selectedTrack);
-    if (!track) return null;
-
-    const settings = trackSettings[selectedTrack];
-
-    return (
-      <Modal
-        visible={showTrackSettings}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowTrackSettings(false)}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{track.name}</Text>
-              <TouchableOpacity 
-                onPress={() => setShowTrackSettings(false)}
-                style={styles.closeButton}
-              >
-                <X size={24} color="#fff" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.settingsSection}>
-              <Text style={styles.settingLabel}>Volume</Text>
-              <View style={styles.volumeControl}>
-                <Volume2 size={20} color="#666" />
-                <View style={styles.slider}>
-                  <View style={styles.sliderTrack}>
-                    <View 
-                      style={[
-                        styles.sliderFill,
-                        { width: `${settings.volume * 100}%` }
-                      ]} 
-                    />
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.settingsSection}>
-              <Text style={styles.settingLabel}>Equalizer</Text>
-              <View style={styles.eqControls}>
-                <View style={styles.eqSlider}>
-                  <Text style={styles.eqLabel}>Low</Text>
-                  <View style={styles.slider}>
-                    <View style={styles.sliderTrack}>
-                      <View 
-                        style={[
-                          styles.sliderFill,
-                          { width: `${(settings.eq.low + 12) / 24 * 100}%` }
-                        ]} 
-                      />
-                    </View>
-                  </View>
-                </View>
-                <View style={styles.eqSlider}>
-                  <Text style={styles.eqLabel}>Mid</Text>
-                  <View style={styles.slider}>
-                    <View style={styles.sliderTrack}>
-                      <View 
-                        style={[
-                          styles.sliderFill,
-                          { width: `${(settings.eq.mid + 12) / 24 * 100}%` }
-                        ]} 
-                      />
-                    </View>
-                  </View>
-                </View>
-                <View style={styles.eqSlider}>
-                  <Text style={styles.eqLabel}>High</Text>
-                  <View style={styles.slider}>
-                    <View style={styles.sliderTrack}>
-                      <View 
-                        style={[
-                          styles.sliderFill,
-                          { width: `${(settings.eq.high + 12) / 24 * 100}%` }
-                        ]} 
-                      />
-                    </View>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.settingsSection}>
-              <Text style={styles.settingLabel}>Loop Settings</Text>
-              <View style={styles.loopControls}>
-                <View style={styles.loopRange}>
-                  <Text style={styles.loopLabel}>Start: {settings.loopStart}%</Text>
-                  <Text style={styles.loopLabel}>End: {settings.loopEnd}%</Text>
-                </View>
-                <View style={styles.loopSlider}>
-                  <View style={styles.sliderTrack}>
-                    <View 
-                      style={[
-                        styles.loopRegion,
-                        {
-                          left: `${settings.loopStart}%`,
-                          width: `${settings.loopEnd - settings.loopStart}%`
-                        }
-                      ]} 
-                    />
-                  </View>
-                </View>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Modal>
-    );
+  // Handle adding a sound to a track
+  const handleAddSound = (index: number) => {
+    console.log(`Opening sound picker for track ${index + 1}`);
+    
+    // Reset search and category filters when opening the picker
+    setSearchQuery('');
+    setActiveCategory('all');
+    
+    // Set the selected track index
+    setSelectedTrackIndex(index);
+    
+    // Fetch library tracks before showing the picker
+    fetchLibraryTracks().then(() => {
+      console.log('Showing sound picker after fetching tracks');
+      setShowSoundPicker(true);
+    }).catch(err => {
+      console.error('Error fetching tracks before showing picker:', err);
+      // Still show the picker even if fetching fails
+      setShowSoundPicker(true);
+    });
   };
 
-  const handlePlayTrack = async (trackId: string) => {
-    const track = tracks.find(t => t.id === trackId);
-    if (!track || !track.url) return;
+  // Load mix data from params if available
+  useEffect(() => {
+    const loadMixData = async () => {
+      console.log('Checking for mix data in params:', params);
+      
+      // Check if we have mix data in params
+      if (params.mixId) {
+        console.log(`Loading mix: ${params.mixId}`);
+        
+        try {
+          // Set mix settings
+          setSettings({
+            name: params.mixName as string || 'Untitled Mix',
+            duration: parseInt(params.mixDuration as string) || 30,
+            isPublic: (params.mixIsPublic as string) === 'true',
+          });
+          
+          // Fetch mix tracks directly from database
+          console.log('Fetching mix tracks directly from database...');
+          const { data: mixTracksData, error } = await supabase
+            .from('mix_tracks')
+            .select(`
+              *,
+              track:track_id (*)
+            `)
+            .eq('mix_id', params.mixId);
+            
+          if (error) {
+            console.error('Error fetching mix tracks:', error);
+            throw error;
+          }
+          
+          console.log('Mix tracks fetched from database:', mixTracksData);
+          
+          if (Array.isArray(mixTracksData) && mixTracksData.length > 0) {
+            // Create new tracks array based on mix tracks
+            const newTracks: Track[] = [...tracks]; // Create a copy of the tracks array
+            
+            // Update tracks with mix data
+            mixTracksData.forEach((mixTrack, idx) => {
+              if (idx < newTracks.length && mixTrack.track) {
+                console.log(`Adding track ${idx + 1}:`, mixTrack.track);
+                newTracks[idx] = {
+                  id: newTracks[idx].id,
+                  name: mixTrack.track.name,
+                  volume: mixTrack.volume || 1,
+                  isPlaying: false,
+                  audioTrackId: mixTrack.track.id,
+                  url: mixTrack.track.url,
+                  loopTime: newTracks[idx].loopTime,
+                };
+              } else {
+                console.log(`Track ${idx + 1} not added:`, 
+                  idx < newTracks.length ? 'Index in range' : 'Index out of range',
+                  mixTrack.track ? 'Track data exists' : 'No track data'
+                );
+              }
+            });
+            
+            console.log('Final tracks array:', newTracks);
+            setTracks(newTracks);
+          } else {
+            console.log('No mix tracks found or empty array returned');
+          }
+        } catch (err) {
+          console.error('Error loading mix data:', err);
+          alert('Failed to load mix data. Please try again.');
+        }
+      }
+    };
+    
+    loadMixData();
+    
+    // Request audio permissions on mount
+    const setupAudio = async () => {
+      console.log('Setting up audio mode...');
+
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          staysActiveInBackground: true,
+          playsInSilentModeIOS: true,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        });
+        console.log('Audio mode set successfully.');
+      } catch (err) {
+        console.error('Failed to set audio mode:', err);
+      }
+    };
+
+    setupAudio();
+
+    // Clean up on unmount
+    return () => {
+      if (progressInterval.current) {
+        clearInterval(progressInterval.current);
+      }
+      
+      // Clear all track progress timers
+      Object.keys(progressTimers.current).forEach(key => {
+        clearInterval(progressTimers.current[key]);
+      });
+      
+      // Clean up any audio
+      Object.keys(audioRefs.current).forEach(async (key) => {
+        const audioRef = audioRefs.current[key];
+        if (audioRef?.sound) {
+          try {
+            await audioRef.sound.unloadAsync();
+          } catch (err) {
+            console.error('Error unloading sound:', err);
+          }
+        }
+      });
+    };
+  }, []);
+
+  // Memoize the fetch function to prevent unnecessary re-renders
+  const fetchLibraryTracks = useCallback(async () => {
+    console.log('Fetching library tracks...');
 
     try {
-      const audioRef = audioRefs.current[trackId];
-      if (Platform.OS === 'web' && audioRef?.element) {
-        audioRef.element.play();
-      } else if (audioRef?.sound) {
-        await audioRef.sound.playAsync();
-      } else {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: track.url },
-          { shouldPlay: true, isLooping: true }
-        );
-        audioRefs.current[trackId] = { sound };
+      setIsLoadingLibrary(true);
+      
+      const fetchPromise = supabase
+        .from('audio_tracks')
+        .select('*')
+        .order('name');
+      
+      const { data, error } = await fetchPromise;
+      
+      if (error) {
+        console.error('Supabase error:', error);
+        throw error;
       }
+      
+      console.log('Library tracks fetched:', data ? data.length : 0, 'tracks');
+      
+      // Check if data is valid
+      if (!data || !Array.isArray(data)) {
+        console.error('Invalid data format received:', data);
+        throw new Error('Invalid data format received from server');
+      }
+      
+      // Log the first few tracks to help with debugging
+      if (data.length > 0) {
+        console.log('Sample tracks:', data.slice(0, 3));
+      } else {
+        console.log('No tracks found in the database');
+      }
+      
+      setLibraryTracks(data);
+    } catch (err) {
+      console.error('Error fetching tracks:', err);
+      
+      // More specific error message based on the error type
+      let errorMessage = 'Failed to load sounds. Please try again.';
+      if (err instanceof Error) {
+        errorMessage = `Error: ${err.message}`;
+      }
+      
+      alert(errorMessage);
+    } finally {
+      setIsLoadingLibrary(false);
+    }
+  }, []);
 
+  // Handle selecting a sound from the library
+  const handleSelectSound = (sound: LibraryTrack) => {
+    console.log('Selected sound:', sound);
+    if (selectedTrackIndex === null) return;
+    
+    setTracks(prev => prev.map((track, idx) => 
+      idx === selectedTrackIndex 
+        ? { ...track, name: sound.name, url: sound.url, audioTrackId: sound.id }
+        : track
+    ));
+    
+    setShowSoundPicker(false);
+    setSelectedTrackIndex(null);
+  };
+
+  // Preview a sound
+  const handlePreviewSound = async (sound: LibraryTrack) => {
+    try {
+      // If already playing this sound, stop it
+      if (playingPreviewId === sound.id) {
+        const audioRef = audioRefs.current[sound.id];
+        
+        if (Platform.OS === 'web') {
+          if (audioRef?.element) {
+            try {
+              audioRef.element.pause();
+              audioRef.element.src = '';
+            } catch (err) {
+              console.error('Error stopping web preview:', err);
+            }
+          }
+        } else {
+          if (audioRef?.sound) {
+            try {
+              await audioRef.sound.stopAsync();
+              await audioRef.sound.unloadAsync();
+            } catch (err) {
+              console.error('Error stopping mobile preview:', err);
+            }
+          }
+        }
+        
+        delete audioRefs.current[sound.id];
+        setPlayingPreviewId(null);
+        return;
+      }
+      
+      // Stop any currently playing preview
+      if (playingPreviewId) {
+        const audioRef = audioRefs.current[playingPreviewId];
+        
+        if (Platform.OS === 'web') {
+          if (audioRef?.element) {
+            try {
+              audioRef.element.pause();
+              audioRef.element.src = '';
+            } catch (err) {
+              console.error('Error stopping previous web preview:', err);
+            }
+          }
+        } else {
+          if (audioRef?.sound) {
+            try {
+              await audioRef.sound.stopAsync();
+              await audioRef.sound.unloadAsync();
+            } catch (err) {
+              console.error('Error stopping previous mobile preview:', err);
+            }
+          }
+        }
+        
+        delete audioRefs.current[playingPreviewId];
+      }
+      
+      // Play the new sound
+      if (Platform.OS === 'web') {
+        try {
+          const audioElement = new window.Audio(sound.url);
+          
+          // Add event listeners before playing
+          audioElement.addEventListener('error', (e: Event) => {
+            console.error('Preview audio element error:', e);
+          });
+          
+          // Safe event handler for ended
+          audioElement.onended = function() {
+            try {
+              setPlayingPreviewId(null);
+              delete audioRefs.current[sound.id];
+            } catch (err: unknown) {
+              console.error('Error in ended handler:', err);
+            }
+          };
+          
+          // Play the audio
+          audioElement.play().catch((err: Error) => {
+            console.error('Error playing preview audio element:', err);
+          });
+          
+          // Store the element
+          audioRefs.current[sound.id] = { element: audioElement };
+          setPlayingPreviewId(sound.id);
+        } catch (err) {
+          console.error('Error setting up web preview audio:', err);
+        }
+      } else {
+        try {
+          const { sound: audioSound } = await Audio.Sound.createAsync(
+            { uri: sound.url },
+            { shouldPlay: true }
+          );
+          
+          audioRefs.current[sound.id] = { sound: audioSound };
+          setPlayingPreviewId(sound.id);
+          
+          // When sound finishes playing
+          audioSound.setOnPlaybackStatusUpdate((status) => {
+            if (status.isLoaded && status.didJustFinish) {
+              setPlayingPreviewId(null);
+              delete audioRefs.current[sound.id];
+            }
+          });
+        } catch (err) {
+          console.error('Error setting up mobile preview audio:', err);
+        }
+      }
+    } catch (err) {
+      console.error('Error previewing sound:', err);
+    }
+  };
+
+  // Play a single track
+  const handlePlayTrack = async (trackId: string) => {
+    console.log(`Playing track ${trackId}`);
+    
+    try {
+      // Find the track
+      const track = tracks.find(t => t.id === trackId);
+      if (!track || !track.url) {
+        console.error('Track not found or has no URL');
+        return;
+      }
+      
+      // Update track state to playing
       setTracks(prev => prev.map(t => 
         t.id === trackId ? { ...t, isPlaying: true } : t
       ));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to play track');
-    }
-  };
-
-  const handlePauseTrack = async (trackId: string) => {
-    try {
-      const audioRef = audioRefs.current[trackId];
-      if (Platform.OS === 'web' && audioRef?.element) {
-        audioRef.element.pause();
-      } else if (audioRef?.sound) {
-        await audioRef.sound.pauseAsync();
+      
+      // Play the audio
+      if (Platform.OS === 'web') {
+        // For web, create an audio element
+        const audioElement = new window.Audio(track.url);
+        
+        // Set loop behavior based on track settings
+        audioElement.loop = true;
+        
+        // Set volume based on track settings
+        audioElement.volume = track.volume;
+        
+        // Add a data attribute to identify this audio element
+        audioElement.dataset.trackId = trackId;
+        
+        // Initialize progress state
+        setTrackProgress(prev => ({
+          ...prev,
+          [trackId]: {
+            current: 0,
+            duration: 0,
+            percent: 0
+          }
+        }));
+        
+        // Set up metadata loaded event to get duration
+        audioElement.addEventListener('loadedmetadata', () => {
+          setTrackProgress(prev => ({
+            ...prev,
+            [trackId]: {
+              ...prev[trackId],
+              duration: audioElement.duration || 0
+            }
+          }));
+        });
+        
+        // Set up loop time handling
+        if (track.loopTime > 0) {
+          // Create a function to handle looping at specific time
+          const handleCustomLoop = (audioElement: HTMLAudioElement, loopTimeMinutes: number) => {
+            // Convert minutes to seconds for comparison
+            const loopTimeSeconds = loopTimeMinutes * 60;
+            
+            // Only apply custom loop if loopTime is greater than 0
+            if (loopTimeMinutes > 0 && audioElement.currentTime >= loopTimeSeconds) {
+              audioElement.currentTime = 0;
+            }
+          };
+          
+          // Add timeupdate event listener for custom loop
+          audioElement.addEventListener('timeupdate', () => handleCustomLoop(audioElement, track.loopTime));
+          
+          // Store the handler reference for cleanup
+          audioRefs.current[trackId] = { 
+            element: audioElement,
+            loopHandler: () => handleCustomLoop(audioElement, track.loopTime)
+          };
+        } else {
+          // Store the audio element reference without custom loop
+          audioRefs.current[trackId] = { element: audioElement };
+        }
+        
+        // Play the audio
+        await audioElement.play();
+        
+        // Start tracking progress
+        startTrackProgressTracking(trackId, audioElement);
+      } else {
+        // For native, use Expo Audio
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: track.url },
+          { 
+            shouldPlay: true,
+            isLooping: true,
+            volume: track.volume,
+            progressUpdateIntervalMillis: 100,
+            positionMillis: 0,
+          },
+          (status) => {
+            if (status.isLoaded) {
+              // Update progress
+              const current = status.positionMillis / 1000;
+              const duration = status.durationMillis ? status.durationMillis / 1000 : 0;
+              const percent = duration > 0 ? (current / duration) * 100 : 0;
+              
+              // Handle custom loop time
+              if (track.loopTime > 0 && current >= track.loopTime) {
+                sound.setPositionAsync(0).catch(err => 
+                  console.error('Error resetting position:', err)
+                );
+              }
+              
+              setTrackProgress(prev => ({
+                ...prev,
+                [trackId]: { current, duration, percent }
+              }));
+            }
+          }
+        );
+        
+        // Store the sound reference
+        audioRefs.current[trackId] = { sound };
+        
+        // Start tracking progress
+        startTrackProgressTracking(trackId, null, sound);
       }
-
+    } catch (err) {
+      console.error('Error playing track:', err);
+      
+      // Reset playing state on error
       setTracks(prev => prev.map(t => 
         t.id === trackId ? { ...t, isPlaying: false } : t
       ));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to pause track');
     }
   };
 
-  const handleAddTrack = async (trackId: string) => {
-    router.push({
-      pathname: '/(tabs)/library' as const,
-      params: { mixerTrackId: trackId }
-    });
+  // Start tracking progress for a track
+  const startTrackProgressTracking = (
+    trackId: string, 
+    audioElement?: HTMLAudioElement | null, 
+    sound?: Audio.Sound | null
+  ) => {
+    // Clear any existing timer
+    if (progressTimers.current[trackId]) {
+      clearInterval(progressTimers.current[trackId]);
+    }
+    
+    // Set up progress tracking
+    if (Platform.OS === 'web' && audioElement) {
+      // For web, set up an interval to update progress
+      progressTimers.current[trackId] = setInterval(() => {
+        try {
+          if (audioElement && !audioElement.paused) {
+            setTrackProgress(prev => ({
+              ...prev,
+              [trackId]: {
+                current: audioElement.currentTime,
+                duration: audioElement.duration || 0,
+                percent: audioElement.duration ? (audioElement.currentTime / audioElement.duration) * 100 : 0
+              }
+            }));
+          }
+        } catch (err) {
+          console.error('Error updating web track progress:', err);
+        }
+      }, 250); // Update more frequently for smoother progress
+    } else if (sound) {
+      // Mobile needs interval to update progress
+      progressTimers.current[trackId] = setInterval(async () => {
+        try {
+          const status = await sound.getStatusAsync();
+          if (status.isLoaded) {
+            setTrackProgress(prev => ({
+              ...prev,
+              [trackId]: {
+                current: status.positionMillis / 1000,
+                duration: status.durationMillis ? status.durationMillis / 1000 : 0,
+                percent: status.durationMillis ? (status.positionMillis / status.durationMillis) * 100 : 0
+              }
+            }));
+          }
+        } catch (err) {
+          console.error('Error updating track progress:', err);
+        }
+      }, 500);
+    }
   };
 
-  const handleRemoveTrack = async (trackId: string) => {
+  // Pause a single track
+  const handlePauseTrack = async (trackId: string) => {
+    console.log(`Pausing track ${trackId}`);
+    
     try {
-      const audioRef = audioRefs.current[trackId];
-      if (Platform.OS === 'web' && audioRef?.element) {
-        audioRef.element.pause();
-        audioRef.element = undefined;
-      } else if (audioRef?.sound) {
-        await audioRef.sound.unloadAsync();
-        audioRef.sound = undefined;
-      }
-
+      // Update track state to not playing
       setTracks(prev => prev.map(t => 
-        t.id === trackId ? { ...t, name: '', url: undefined, isPlaying: false } : t
+        t.id === trackId ? { ...t, isPlaying: false } : t
+      ));
+      
+      // Pause the audio
+      if (Platform.OS === 'web') {
+        const audioRef = audioRefs.current[trackId];
+        if (audioRef?.element) {
+          audioRef.element.pause();
+        }
+      } else {
+        const audioRef = audioRefs.current[trackId];
+        if (audioRef?.sound) {
+          await audioRef.sound.pauseAsync();
+        }
+      }
+      
+      // Clear progress tracking
+      if (progressTimers.current[trackId]) {
+        clearInterval(progressTimers.current[trackId]);
+        delete progressTimers.current[trackId];
+      }
+    } catch (err) {
+      console.error('Error pausing track:', err);
+    }
+  };
+
+  // Remove a track's sound
+  const handleRemoveTrack = async (trackId: string) => {
+    console.log(`Removing track ${trackId}`);
+    
+    try {
+      // First pause the track if it's playing
+      if (tracks.find(t => t.id === trackId)?.isPlaying) {
+        await handlePauseTrack(trackId);
+      }
+      
+      // Clean up audio resources
+      const audioRef = audioRefs.current[trackId];
+      if (Platform.OS === 'web') {
+        if (audioRef?.element) {
+          audioRef.element.pause();
+          audioRef.element.src = '';
+          
+          // Remove custom loop event listener if it exists
+          if (audioRef.loopHandler) {
+            audioRef.element.removeEventListener('timeupdate', audioRef.loopHandler);
+          }
+        }
+      } else {
+        if (audioRef?.sound) {
+          await audioRef.sound.unloadAsync();
+        }
+      }
+      
+      // Remove the audio reference
+      delete audioRefs.current[trackId];
+      
+      // Clear the track name and URL
+      setTracks(prev => prev.map(t => 
+        t.id === trackId ? { ...t, name: '', url: undefined, audioTrackId: undefined, isPlaying: false } : t
       ));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove track');
+      console.error('Error removing track:', err);
     }
   };
 
-  const handlePreviewToggle = async () => {
-    if (isPreviewPlaying) {
-      // Stop all tracks
+  // Toggle master play/pause
+  const handleMasterPlayPause = async () => {
+    try {
+      if (isMasterPlaying) {
+        // Pause all tracks
       for (const track of tracks) {
         if (track.isPlaying) {
           await handlePauseTrack(track.id);
         }
       }
-      setIsPreviewPlaying(false);
-    } else {
-      // Play all tracks with audio
-      for (const track of tracks) {
-        if (track.url) {
-          await handlePlayTrack(track.id);
+        
+        // Stop progress tracking
+        if (progressInterval.current) {
+          clearInterval(progressInterval.current);
         }
-      }
-      setIsPreviewPlaying(true);
-    }
-  };
-
-  const handleSaveMix = async () => {
-    if (!settings.name) {
-      setError('Please enter a name for your mix');
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        router.replace('/auth');
+        
+        setIsMasterPlaying(false);
+      } else {
+        // Play all tracks that have audio
+        const tracksWithAudio = tracks.filter(track => track.url);
+        
+        if (tracksWithAudio.length === 0) {
+          alert('Add sounds to tracks before playing');
         return;
       }
 
-      const { data, error } = await supabase
-        .from('mixes')
-        .insert({
-          name: settings.name,
-          duration: settings.duration,
-          is_public: settings.isPublic,
-          user_id: user.id,
-          tracks: tracks
-            .filter(t => t.url)
-            .map(t => ({
-              url: t.url,
-              name: t.name,
-              volume: trackSettings[t.id].volume,
-              eq: trackSettings[t.id].eq,
-              loop: trackSettings[t.id].loop,
-              loopStart: trackSettings[t.id].loopStart,
-              loopEnd: trackSettings[t.id].loopEnd,
-            }))
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-      
-      router.replace({
-        pathname: '/(tabs)/mixer' as const,
-        params: { id: data.id }
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save mix');
-    } finally {
-      setIsLoading(false);
+        for (const track of tracksWithAudio) {
+          await handlePlayTrack(track.id);
+        }
+        
+        // Start progress tracking
+        const startTime = Date.now();
+        const duration = settings.duration * 60 * 1000; // Convert minutes to ms
+        
+        progressInterval.current = setInterval(() => {
+          const elapsed = Date.now() - startTime;
+          const progress = Math.min((elapsed / duration) * 100, 100);
+          setMasterProgress(progress);
+          
+          if (progress >= 100) {
+            // Stop all tracks when complete
+            tracks.forEach(async track => {
+              if (track.isPlaying) {
+                await handlePauseTrack(track.id);
+              }
+            });
+            
+            if (progressInterval.current) {
+              clearInterval(progressInterval.current);
+            }
+            
+            setIsMasterPlaying(false);
+          }
+        }, 100);
+        
+        setIsMasterPlaying(true);
+      }
+    } catch (error) {
+      console.error('Error controlling master playback:', error);
     }
   };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Mix Creator</Text>
-        <Text style={styles.subtitle}>Create your perfect meditation mix</Text>
+  // Handle volume change for a track
+  const handleVolumeChange = (trackId: string, newVolume: number) => {
+    console.log(`Changing volume for track ${trackId} to ${newVolume}`);
+    
+    // Update the track's volume in state
+    setTracks(prev => prev.map(track => 
+      track.id === trackId ? { ...track, volume: newVolume } : track
+    ));
+    
+    // Update the audio element or sound object volume
+    if (Platform.OS === 'web') {
+      // For web, find the audio element for this track in audioRefs
+      const audioRef = audioRefs.current[trackId];
+      if (audioRef?.element) {
+        audioRef.element.volume = newVolume;
+        console.log(`Set web audio volume to ${newVolume}`);
+      } else {
+        console.log(`No audio element found for track ${trackId}`);
+      }
+    } else {
+      // For native, update the Audio.Sound object's volume
+      const audioRef = audioRefs.current[trackId];
+      if (audioRef?.sound) {
+        audioRef.sound.setVolumeAsync(newVolume)
+          .then(() => console.log(`Set native audio volume to ${newVolume}`))
+          .catch((err: Error) => console.error('Error setting volume:', err));
+      } else {
+        console.log(`No sound object found for track ${trackId}`);
+      }
+    }
+  };
+
+  // Handle loop time change for a track
+  const handleLoopTimeChange = (trackId: string, newLoopTime: number) => {
+    console.log(`Changing loop time for track ${trackId} to ${newLoopTime} minutes`);
+    
+    // Update the track's loop time in state (convert to minutes)
+    setTracks(prev => prev.map(track => 
+      track.id === trackId ? { ...track, loopTime: newLoopTime } : track
+    ));
+  };
+
+  // Toggle volume slider visibility
+  const toggleVolumeSlider = (trackId: string) => {
+    setShowVolumeSlider(prev => prev === trackId ? null : trackId);
+  };
+
+  // Optimize the sound picker for performance
+  const renderSoundItem = useCallback(({ item }: { item: LibraryTrack }) => (
+    <View style={styles.soundCard}>
+      <View style={styles.soundInfo}>
+        <View style={styles.soundIcon}>
+          <Music2 size={20} color="#fff" />
+        </View>
+        <Text style={styles.soundName}>{item.name}</Text>
       </View>
 
-      <View style={styles.content}>
-        <View style={styles.trackList}>
-          {tracks.map((track, index) => (
+      <View style={styles.soundActions}>
             <TouchableOpacity
-              key={track.id}
               style={[
-                styles.track,
-                track.name && styles.trackWithAudio,
-                selectedTrack === track.id && styles.trackSelected
-              ]}
-              onPress={() => handleTrackPress(track.id)}
+            styles.previewButton,
+            playingPreviewId === item.id && styles.previewButtonActive
+          ]}
+          onPress={() => handlePreviewSound(item)}
+        >
+          {playingPreviewId === item.id ? (
+            <Pause size={20} color="#fff" />
+          ) : (
+            <Play size={20} color="#fff" />
+          )}
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={styles.selectButton}
+          onPress={() => handleSelectSound(item)}
+        >
+          <Plus size={20} color="#fff" />
+          <Text style={styles.selectButtonText}>Add to Track</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  ), [playingPreviewId, handlePreviewSound, handleSelectSound]);
+
+  // Render the sound picker modal with optimizations
+  const renderSoundPicker = () => {
+    // Calculate the filtered tracks for debugging
+    const filteredTracks = libraryTracks.filter(track => 
+      (activeCategory === 'all' || track.category === activeCategory) &&
+      (searchQuery === '' || track.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    );
+    
+    console.log(`Displaying ${filteredTracks.length} tracks after filtering (category: ${activeCategory}, search: "${searchQuery}")`);
+
+    return (
+      <TabletModal
+        visible={showSoundPicker}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowSoundPicker(false)}
+        statusBarTranslucent={true}
+      >
+        <SafeAreaView style={styles.soundPickerContainer} edges={['top', 'left', 'right']}>
+          <View style={styles.soundPickerHeader}>
+            <Text style={styles.soundPickerTitle}>
+              Select Sound for Track {selectedTrackIndex !== null ? (selectedTrackIndex + 1).toString() : ''}
+            </Text>
+            <TouchableOpacity 
+              style={styles.closeButton}
+              onPress={() => setShowSoundPicker(false)}
             >
-              <View style={styles.trackInfo}>
-                <Text style={styles.trackNumber}>{index + 1}</Text>
-                <Text style={styles.trackName}>
-                  {track.name || 'Empty Track'}
-                </Text>
-              </View>
-              
-              <View style={styles.trackControls}>
-                {track.name ? (
-                  <>
+              <X size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.searchContainer}>
+            <View style={styles.searchInput}>
+              <Search size={20} color="#666" />
+              <TextInput
+                style={styles.searchField}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search sounds..."
+                placeholderTextColor="#666"
+                    />
+                  </View>
+                </View>
+
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.categoriesContainer}
+          >
+            {['all', 'nature', 'music', 'meditation', 'voice', 'binaural'].map(category => {
+              const categoryDisplayName = category.charAt(0).toUpperCase() + category.slice(1);
+              return (
+                <TouchableOpacity
+                  key={category}
+                  style={[
+                    styles.categoryButton,
+                    activeCategory === category && styles.activeCategoryButton
+                  ]}
+                  onPress={() => setActiveCategory(category)}
+                >
+                  <Text style={[
+                    styles.categoryButtonText,
+                    activeCategory === category && styles.activeCategoryButtonText
+                  ]}>
+                    {categoryDisplayName}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {isLoadingLibrary ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#6366f1" />
+              <Text style={styles.loadingText}>Loading sounds...</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredTracks}
+              renderItem={renderSoundItem}
+              keyExtractor={item => item.id}
+              contentContainerStyle={styles.soundsList}
+              initialNumToRender={8}
+              maxToRenderPerBatch={5}
+              windowSize={3}
+              removeClippedSubviews={true}
+              updateCellsBatchingPeriod={50}
+              getItemLayout={(data, index) => (
+                {length: 80, offset: 80 * index, index}
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>No sounds found</Text>
+                  <Text style={styles.emptySubtext}>
+                    {libraryTracks.length > 0 
+                      ? "Try changing your search or category filter" 
+                      : "No tracks available in the database"}
+                  </Text>
+                </View>
+              }
+            />
+          )}
+        </SafeAreaView>
+      </TabletModal>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['bottom']}>
+      <View style={styles.content}>
+        <Text style={styles.title}>Mixer</Text>
+        
+        <TextInput
+          style={styles.nameInput}
+          placeholder="Enter mix name"
+          placeholderTextColor="#666"
+          value={settings.name}
+          onChangeText={(text) => setSettings({...settings, name: text})}
+        />
+        
+        <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent}>
+          <View style={styles.tracksContainer}>
+            {tracks.map((track, index) => (
+              <View key={track.id} style={styles.trackItem}>
+                <View style={styles.trackHeader}>
+                  <View style={styles.trackInfo}>
+                    <Text style={styles.trackLabel}>Track {(index + 1).toString()}</Text>
+                    <Text style={styles.trackName}>{track.name || 'Empty'}</Text>
+                  </View>
+                  
+                  {track.name ? (
+                    <View style={styles.trackControls}>
+                      <TouchableOpacity
+                        style={[styles.trackButton, track.isPlaying && styles.trackButtonActive]}
+                        onPress={() => track.isPlaying ? handlePauseTrack(track.id) : handlePlayTrack(track.id)}
+                      >
+                        {track.isPlaying ? (
+                          <Pause size={16} color="#fff" />
+                        ) : (
+                          <Play size={16} color="#fff" />
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={[styles.trackButton, showVolumeSlider === track.id && styles.trackButtonActive]}
+                        onPress={() => toggleVolumeSlider(track.id)}
+                      >
+                        <Volume2 size={16} color="#fff" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.trackButton}
+                        onPress={() => handleRemoveTrack(track.id)}
+                      >
+                        <Trash2 size={16} color="#ef4444" />
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
                     <TouchableOpacity
-                      style={styles.trackButton}
-                      onPress={() => track.isPlaying ? handlePauseTrack(track.id) : handlePlayTrack(track.id)}
+                      style={styles.addSoundButton}
+                      onPress={() => handleAddSound(index)}
                     >
-                      {track.isPlaying ? (
-                        <Pause size={20} color="#fff" />
-                      ) : (
-                        <Play size={20} color="#fff" />
-                      )}
+                      <Plus size={16} color="#fff" />
+                      <Text style={styles.buttonText}>Add Sound</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.trackButton}
-                      onPress={() => handleRemoveTrack(track.id)}
-                    >
-                      <Trash2 size={20} color="#ef4444" />
-                    </TouchableOpacity>
-                  </>
-                ) : (
-                  <TouchableOpacity
-                    style={styles.addButton}
-                    onPress={() => handleAddTrack(track.id)}
-                  >
-                    <Plus size={20} color="#fff" />
-                    <Text style={styles.addButtonText}>Add Sound</Text>
-                  </TouchableOpacity>
+                  )}
+                </View>
+                
+                {/* Track progress bar - only show if track has a name */}
+                {track.name && (
+                  <View style={styles.trackProgressContainer}>
+                    <View style={styles.progressBar}>
+                      <View 
+                        style={[
+                          styles.progressFill, 
+                          { 
+                            width: `${trackProgress[track.id]?.percent || 0}%` 
+                          }
+                        ]} 
+                      />
+                    </View>
+                    <View style={styles.timeDisplay}>
+                      <Text style={styles.timeText}>
+                        {formatTime(trackProgress[track.id]?.current || 0)}
+                      </Text>
+                      <Text style={styles.timeText}>
+                        {formatTime(trackProgress[track.id]?.duration || 0)}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* Add volume slider below track controls if visible */}
+                {showVolumeSlider === track.id && (
+                  <View style={styles.volumeSliderContainer}>
+                    <Text style={styles.volumeLabel}>Volume: {Math.round(track.volume * 100)}%</Text>
+                    <View style={styles.sliderContainer}>
+                      <TouchableOpacity 
+                        style={styles.volumeButton}
+                        onPress={() => handleVolumeChange(track.id, Math.max(0, track.volume - 0.1))}
+                      >
+                        <Text style={styles.volumeButtonText}>-</Text>
+                      </TouchableOpacity>
+                      <View style={styles.sliderTrack}>
+                        <View style={[styles.sliderFill, { width: `${track.volume * 100}%` }]} />
+                      </View>
+                      <TouchableOpacity 
+                        style={styles.volumeButton}
+                        onPress={() => handleVolumeChange(track.id, Math.min(1, track.volume + 0.1))}
+                      >
+                        <Text style={styles.volumeButtonText}>+</Text>
+                      </TouchableOpacity>
+                    </View>
+                    
+                    <Text style={[styles.volumeLabel, { marginTop: 12 }]}>
+                      Loop Time: {track.loopTime} {track.loopTime === 1 ? 'minute' : 'minutes'}
+                      {track.loopTime === 0 && ' (disabled)'}
+                    </Text>
+                    <View style={styles.sliderContainer}>
+                      <TouchableOpacity 
+                        style={styles.volumeButton}
+                        onPress={() => handleLoopTimeChange(track.id, Math.max(0, track.loopTime - 1))}
+                      >
+                        <Text style={styles.volumeButtonText}>-</Text>
+                      </TouchableOpacity>
+                      <View style={styles.sliderTrack}>
+                        <View style={[styles.sliderFill, { width: `${(track.loopTime / 120) * 100}%` }]} />
+                      </View>
+                      <TouchableOpacity 
+                        style={styles.volumeButton}
+                        onPress={() => handleLoopTimeChange(track.id, Math.min(120, track.loopTime + 1))}
+                      >
+                        <Text style={styles.volumeButtonText}>+</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
                 )}
               </View>
-            </TouchableOpacity>
-          ))}
-        </View>
+            ))}
+            
+            {tracks.length < 8 && (
+              <TouchableOpacity 
+                style={styles.addTrackButton} 
+                onPress={addNewTrack}
+              >
+                <Plus size={18} color="#fff" />
+                <Text style={styles.buttonText}>Add Track</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
+            </View>
 
-        <View style={styles.mixControls}>
+      {/* SoundCloud-style player */}
+      <View style={styles.player}>
+        <View style={styles.progressContainer}>
+          <View style={styles.progressBar}>
+                    <View 
+                      style={[
+                styles.progressFill, 
+                { width: `${masterProgress}%` }
+                      ]} 
+                    />
+                  </View>
+                </View>
+        
+        <View style={styles.playerControls}>
           <TouchableOpacity
-            style={[styles.playButton, isPreviewPlaying && styles.playButtonActive]}
-            onPress={handlePreviewToggle}
+            style={[styles.playButton, isMasterPlaying && styles.pauseButton]}
+            onPress={handleMasterPlayPause}
           >
-            {isPreviewPlaying ? (
+            {isMasterPlaying ? (
               <Pause size={24} color="#fff" />
             ) : (
               <Play size={24} color="#fff" />
             )}
-            <Text style={styles.playButtonText}>
-              {isPreviewPlaying ? 'Stop Preview' : 'Preview Mix'}
-            </Text>
           </TouchableOpacity>
-
+          
           <TouchableOpacity
             style={styles.saveButton}
-            onPress={handleSaveMix}
+            onPress={() => {
+              if (!settings.name) {
+                alert('Please enter a name for your mix');
+                return;
+              }
+              
+              // In a real implementation, this would save the mix to the database
+              alert(`Mix "${settings.name}" saved!`);
+            }}
           >
-            <Text style={styles.saveButtonText}>Save Mix</Text>
+            <Save size={24} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
 
-      {renderTrackSettings()}
+      {renderSoundPicker()}
     </SafeAreaView>
   );
 }
@@ -473,52 +1123,55 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  header: {
-    padding: 20,
-    paddingBottom: 10,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#6366f1',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-  },
   content: {
     flex: 1,
-    padding: 20,
+    padding: 16,
   },
-  trackList: {
+  scrollContainer: {
     flex: 1,
   },
-  track: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    padding: 16,
+  scrollContent: {
+    paddingBottom: 20,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
     marginBottom: 12,
   },
-  trackWithAudio: {
-    borderColor: '#2563eb',
-    borderWidth: 1,
+  nameInput: {
+    backgroundColor: '#262626',
+    borderRadius: 8,
+    padding: 12,
+    color: '#fff',
+    fontSize: 16,
+    marginBottom: 16,
   },
-  trackSelected: {
-    backgroundColor: '#1e293b',
-  },
-  trackInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  tracksContainer: {
     flex: 1,
   },
-  trackNumber: {
+  trackItem: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  trackHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  trackInfo: {
+    flex: 1,
+  },
+  trackLabel: {
     color: '#666',
-    fontSize: 16,
-    marginRight: 12,
+    fontSize: 12,
   },
   trackName: {
     color: '#fff',
@@ -526,150 +1179,312 @@ const styles = StyleSheet.create({
   },
   trackControls: {
     flexDirection: 'row',
-    alignItems: 'center',
+    gap: 8,
   },
   trackButton: {
-    padding: 8,
-    marginLeft: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#333',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  addButton: {
+  trackButtonActive: {
+    backgroundColor: '#6366f1',
+  },
+  addSoundButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2563eb',
-    paddingHorizontal: 12,
+    backgroundColor: '#333',
     paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    gap: 4,
   },
-  addButtonText: {
+  addTrackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#262626',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 8,
+  },
+  buttonText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '600',
-    marginLeft: 6,
   },
-  mixControls: {
+  trackProgressContainer: {
+    marginTop: 8,
+    width: '100%',
+  },
+  progressBar: {
+    height: 4,
+    backgroundColor: '#333',
+    borderRadius: 2,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#6366f1',
+    borderRadius: 2,
+    minWidth: 2, // Ensure it's always visible when there's progress
+  },
+  timeDisplay: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 24,
+    marginTop: 4,
+  },
+  timeText: {
+    color: '#666',
+    fontSize: 12,
+  },
+  player: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#1a1a1a',
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+    padding: 12,
+  },
+  progressContainer: {
+    marginBottom: 8,
+  },
+  playerControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 12,
   },
   playButton: {
-    flexDirection: 'row',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#6366f1',
     alignItems: 'center',
-    backgroundColor: '#2563eb',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
-    flex: 1,
-    marginRight: 12,
     justifyContent: 'center',
   },
-  playButtonActive: {
+  pauseButton: {
     backgroundColor: '#ef4444',
   },
-  playButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-    marginLeft: 8,
-  },
   saveButton: {
-    backgroundColor: '#6366f1',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
-    flex: 1,
-    marginLeft: 12,
-    justifyContent: 'center',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#333',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+  waveformContainer: {
+    marginTop: 4,
   },
-  modalContainer: {
+  waveform: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    height: 24,
+    gap: 1,
+  },
+  waveformBar: {
+    width: 3,
+    borderRadius: 1,
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    justifyContent: 'flex-end',
   },
-  modalContent: {
+  // Sound picker styles
+  soundPickerContainer: {
+    flex: 1,
     backgroundColor: '#1a1a1a',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    maxHeight: '80%',
   },
-  modalHeader: {
+  soundPickerHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+    zIndex: 10,
   },
-  modalTitle: {
-    fontSize: 20,
+  soundPickerTitle: {
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#fff',
   },
-  settingsSection: {
-    marginBottom: 24,
+  closeButton: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: '#333',
   },
-  settingLabel: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
+  searchContainer: {
+    padding: 15,
+    zIndex: 5,
   },
-  volumeControl: {
+  searchInput: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
   },
-  slider: {
+  searchField: {
     flex: 1,
-    height: 20,
+    color: '#fff',
+    marginLeft: 10,
+    fontSize: 16,
+  },
+  categoriesContainer: {
+    paddingHorizontal: 10,
+  },
+  categoryButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    marginHorizontal: 5,
+    borderRadius: 20,
+    backgroundColor: '#333',
+  },
+  activeCategoryButton: {
+    backgroundColor: '#6366f1',
+  },
+  categoryButtonText: {
+    color: '#fff',
+    fontSize: 14,
+  },
+  activeCategoryButtonText: {
+    fontWeight: 'bold',
+  },
+  soundsList: {
+    padding: 15,
+  },
+  soundCard: {
+    backgroundColor: '#333',
+    borderRadius: 8,
+    padding: 15,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  soundInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  soundIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#6366f1',
     justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  soundName: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  soundActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  previewButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  previewButtonActive: {
+    backgroundColor: '#6366f1',
+  },
+  selectButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#6366f1',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  selectButtonText: {
+    color: '#fff',
+    marginLeft: 5,
+    fontWeight: '500',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  loadingText: {
+    color: '#fff',
+    marginTop: 10,
+    fontSize: 16,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    marginTop: 50,
+  },
+  emptyText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  emptySubtext: {
+    color: '#999',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  volumeSliderContainer: {
+    marginTop: 8,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    padding: 8,
+  },
+  volumeLabel: {
+    color: '#fff',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  sliderContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   sliderTrack: {
+    flex: 1,
     height: 4,
-    backgroundColor: '#262626',
+    backgroundColor: '#333',
     borderRadius: 2,
+    marginHorizontal: 8,
     overflow: 'hidden',
   },
   sliderFill: {
     height: '100%',
     backgroundColor: '#6366f1',
+    borderRadius: 2,
   },
-  eqControls: {
-    gap: 16,
-  },
-  eqSlider: {
-    gap: 8,
-  },
-  eqLabel: {
-    color: '#666',
-    fontSize: 14,
-  },
-  loopControls: {
-    gap: 12,
-  },
-  loopRange: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  loopLabel: {
-    color: '#666',
-    fontSize: 14,
-  },
-  loopSlider: {
-    height: 20,
+  volumeButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#333',
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  loopRegion: {
-    position: 'absolute',
-    height: '100%',
-    backgroundColor: '#6366f1',
-    opacity: 0.5,
-  },
-  closeButton: {
-    padding: 8,
+  volumeButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });
