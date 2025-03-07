@@ -779,6 +779,106 @@ export default function MixerScreen() {
     ));
   };
 
+  // Save mix to database
+  const saveMix = async () => {
+    if (!settings.name) {
+      alert('Please enter a name for your mix');
+      return;
+    }
+
+    try {
+      // Check if we're updating an existing mix or creating a new one
+      const isUpdate = params.mixId ? true : false;
+      let mixId = params.mixId as string;
+
+      console.log(`${isUpdate ? 'Updating' : 'Creating new'} mix: ${settings.name}`);
+
+      // If creating a new mix, insert into mixes table
+      if (!isUpdate) {
+        const { data: newMix, error: mixError } = await supabase
+          .from('mixes')
+          .insert({
+            name: settings.name,
+            duration: settings.duration,
+            is_public: settings.isPublic,
+            user_id: (await supabase.auth.getUser()).data.user?.id
+          })
+          .select()
+          .single();
+
+        if (mixError) {
+          console.error('Error creating mix:', mixError);
+          throw mixError;
+        }
+
+        mixId = newMix.id;
+        console.log('Created new mix with ID:', mixId);
+      } else {
+        // Update existing mix
+        const { error: updateError } = await supabase
+          .from('mixes')
+          .update({
+            name: settings.name,
+            duration: settings.duration,
+            is_public: settings.isPublic
+          })
+          .eq('id', mixId);
+
+        if (updateError) {
+          console.error('Error updating mix:', updateError);
+          throw updateError;
+        }
+
+        // Delete existing mix tracks to replace them
+        const { error: deleteError } = await supabase
+          .from('mix_tracks')
+          .delete()
+          .eq('mix_id', mixId);
+
+        if (deleteError) {
+          console.error('Error deleting existing mix tracks:', deleteError);
+          throw deleteError;
+        }
+      }
+
+      // Insert mix tracks for tracks that have audio
+      const tracksWithAudio = tracks.filter(track => track.audioTrackId && track.url);
+      
+      if (tracksWithAudio.length === 0) {
+        alert('Your mix needs at least one sound to save.');
+        return;
+      }
+
+      // Prepare mix tracks for insertion
+      const mixTracks = tracksWithAudio.map(track => ({
+        mix_id: mixId,
+        track_id: track.audioTrackId,
+        volume: track.volume
+      }));
+
+      // Insert mix tracks
+      const { error: tracksError } = await supabase
+        .from('mix_tracks')
+        .insert(mixTracks);
+
+      if (tracksError) {
+        console.error('Error saving mix tracks:', tracksError);
+        throw tracksError;
+      }
+
+      console.log('Successfully saved mix and tracks');
+      alert(`Mix "${settings.name}" saved!`);
+
+      // If it's a new mix, update the URL to include the mix ID
+      if (!isUpdate) {
+        router.setParams({ mixId });
+      }
+    } catch (err) {
+      console.error('Error saving mix:', err);
+      alert('Failed to save mix. Please try again.');
+    }
+  };
+
   // Toggle volume slider visibility
   const toggleVolumeSlider = (trackId: string) => {
     setShowVolumeSlider(prev => prev === trackId ? null : trackId);
@@ -930,7 +1030,15 @@ export default function MixerScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <View style={styles.content}>
-        <Text style={styles.title}>Mixer</Text>
+        <View style={styles.header}>
+          <Text style={styles.title}>Mixer</Text>
+          <TouchableOpacity 
+            style={styles.closeButton}
+            onPress={() => router.back()}
+          >
+            <X size={24} color="#6366f1" />
+          </TouchableOpacity>
+        </View>
         
         <TextInput
           style={styles.nameInput}
@@ -1098,15 +1206,7 @@ export default function MixerScreen() {
           
           <TouchableOpacity
             style={styles.saveButton}
-            onPress={() => {
-              if (!settings.name) {
-                alert('Please enter a name for your mix');
-                return;
-              }
-              
-              // In a real implementation, this would save the mix to the database
-              alert(`Mix "${settings.name}" saved!`);
-            }}
+            onPress={saveMix}
           >
             <Save size={24} color="#fff" />
           </TouchableOpacity>
@@ -1132,6 +1232,14 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 20,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
   title: {
     fontSize: 28,
@@ -1314,8 +1422,6 @@ const styles = StyleSheet.create({
   },
   closeButton: {
     padding: 8,
-    borderRadius: 20,
-    backgroundColor: '#333',
   },
   searchContainer: {
     padding: 15,
