@@ -6,6 +6,7 @@ import { router } from 'expo-router';
 import { Calendar, Clock, Timer, TrendingUp, Activity, Sun, Moon } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '@/lib/supabase';
+import LoginOverlay from '@/components/LoginOverlay';
 
 interface MeditationStats {
   totalSessions: number;
@@ -45,10 +46,37 @@ export default function MeditationStatsScreen() {
     weeklyProgress: []
   });
   const [loading, setLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetchMeditationStats();
+    checkAuthStatus();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setIsAuthenticated(!!session);
+        if (session) {
+          fetchMeditationStats();
+        }
+      }
+    );
+
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
   }, []);
+
+  async function checkAuthStatus() {
+    try {
+      const { data } = await supabase.auth.getSession();
+      setIsAuthenticated(!!data.session);
+      if (data.session) {
+        fetchMeditationStats();
+      }
+    } catch (error) {
+      console.error('Error checking auth status:', error);
+      setIsAuthenticated(false);
+    }
+  }
 
   async function fetchMeditationStats() {
     try {
@@ -159,7 +187,7 @@ export default function MeditationStatsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Text style={styles.title}>Meditation Stats</Text>
@@ -282,6 +310,12 @@ export default function MeditationStatsScreen() {
           </View>
         </View>
       </ScrollView>
+      
+      <LoginOverlay 
+        visible={isAuthenticated === false} 
+        message="Please log in to view your meditation statistics and progress."
+        onLogin={() => setIsAuthenticated(true)}
+      />
     </SafeAreaView>
   );
 }

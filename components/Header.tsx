@@ -1,9 +1,21 @@
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import { View, Text, StyleSheet, Platform, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { LogIn } from 'lucide-react-native';
 import ZenLogo from './ZenLogo';
+import { supabase } from '@/lib/supabase';
 
-export default function Header() {
+interface HeaderProps {
+  isAuthenticated: boolean | null;
+}
+
+export default function Header({ isAuthenticated }: HeaderProps) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  
+  function handleLogin() {
+    router.push('/auth');
+  }
   
   return (
     <View style={[
@@ -15,7 +27,15 @@ export default function Header() {
           <ZenLogo size={24} color="#fff" />
           <Text style={styles.title}>ZenMix</Text>
         </View>
-        <Text style={styles.subtitle}>by Medit8</Text>
+        <View style={styles.rightContainer}>
+          <Text style={styles.subtitle}>by Medit8</Text>
+          {!isAuthenticated && (
+            <TouchableOpacity style={styles.authButton} onPress={handleLogin}>
+              <LogIn size={20} color="#2563eb" />
+              <Text style={styles.authButtonText}>Login</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     </View>
   );
@@ -42,6 +62,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  rightContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
   title: {
     fontSize: 20,
     fontWeight: '600',
@@ -50,5 +75,18 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: '#666',
+  },
+  authButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 4,
+    backgroundColor: '#1a1a1a',
+  },
+  authButtonText: {
+    fontSize: 14,
+    color: '#2563eb',
   },
 });

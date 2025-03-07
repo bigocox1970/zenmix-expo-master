@@ -6,6 +6,7 @@ import { Plus, Play, Pause, Save, Volume2, Trash2, Music2, Search, X } from 'luc
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams, router } from 'expo-router';
 import { TabletModal } from '@/components/TabletModal';
+import LoginOverlay from '@/components/LoginOverlay';
 
 // Track interface
 interface Track {
@@ -79,6 +80,7 @@ export default function MixerScreen() {
   const [trackProgress, setTrackProgress] = useState<TrackProgress>({});
   const progressTimers = useRef<{ [key: string]: NodeJS.Timeout }>({});
   const [showVolumeSlider, setShowVolumeSlider] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
 
   // Format time in MM:SS
   const formatTime = (seconds: number): string => {
@@ -236,6 +238,30 @@ export default function MixerScreen() {
       });
     };
   }, []);
+
+  useEffect(() => {
+    checkAuthStatus();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setIsAuthenticated(!!session);
+      }
+    );
+
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function checkAuthStatus() {
+    try {
+      const { data } = await supabase.auth.getSession();
+      setIsAuthenticated(!!data.session);
+    } catch (error) {
+      console.error('Error checking auth status:', error);
+      setIsAuthenticated(false);
+    }
+  }
 
   // Memoize the fetch function to prevent unnecessary re-renders
   const fetchLibraryTracks = useCallback(async () => {
@@ -1177,7 +1203,7 @@ export default function MixerScreen() {
             )}
           </View>
         </ScrollView>
-            </View>
+      </View>
 
       {/* SoundCloud-style player */}
       <View style={styles.player}>
@@ -1214,6 +1240,12 @@ export default function MixerScreen() {
       </View>
 
       {renderSoundPicker()}
+
+      <LoginOverlay 
+        visible={isAuthenticated === false} 
+        message="Please log in to create and save your meditation mixes."
+        onLogin={() => setIsAuthenticated(true)}
+      />
     </SafeAreaView>
   );
 }

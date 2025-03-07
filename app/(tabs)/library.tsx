@@ -2,10 +2,14 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, FlatLi
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect, useRef } from 'react';
 import { Audio } from 'expo-av';
-import { Music2, Users, Play, Pause, CreditCard as Edit, Trash2, Upload, Check, ChevronDown, Volume2, X } from 'lucide-react-native';
+import { Music2, Users, Play, Pause, CreditCard as Edit, Trash2, Upload, Check, ChevronDown, Volume2, X, Plus } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams, router } from 'expo-router';
 import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import React from 'react';
+import LoginOverlay from '@/components/LoginOverlay';
 
 interface Track {
   id: string;
@@ -35,13 +39,32 @@ interface AudioRef {
   progress?: number;
 }
 
-const CATEGORIES = [
-  { id: 'all', label: 'All' },
-  { id: 'nature', label: 'Nature' },
-  { id: 'music', label: 'Music' },
-  { id: 'beats', label: 'Beats' },
-  { id: 'voice', label: 'Voice Guided' },
-];
+interface AudioFile {
+  name: string;
+  uri?: string;
+  type?: string;
+  size?: number;
+}
+
+interface UploadDetails {
+  name: string;
+  category: string;
+  file: AudioFile | File | null;
+}
+
+function isAudioFile(file: AudioFile | File): file is AudioFile {
+  return 'uri' in file;
+}
+
+// Define category types
+type StringCategory = string;
+type ObjectCategory = { id: string; label: string };
+type Category = StringCategory | ObjectCategory;
+
+// Define category constants
+const BUILT_IN_CATEGORIES = ['all', 'nature', 'music', 'meditation', 'voice', 'binaural'];
+const MY_LIBRARY_CATEGORIES = ['all', 'uploads', 'mixes', 'favorites'];
+const COMMUNITY_CATEGORIES = ['all', 'popular', 'recent', 'featured'];
 
 const TABS = [
   { id: 'built-in', label: 'Built-in Sounds', icon: Music2 },
@@ -68,6 +91,13 @@ export default function LibraryScreen() {
   const [playingProgress, setPlayingProgress] = useState<{ [key: string]: number }>({});
   const audioRef = useRef<AudioRef>({});
   const progressInterval = useRef<NodeJS.Timeout>();
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadDetails, setUploadDetails] = useState<UploadDetails>({
+    name: '',
+    category: '',
+    file: null
+  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -91,6 +121,38 @@ export default function LibraryScreen() {
       audioRef.current = {};
     };
   }, []);
+
+  useEffect(() => {
+    checkAuthStatus();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setIsAuthenticated(!!session);
+        if (session) {
+          fetchMixes();
+          fetchTracks();
+        }
+      }
+    );
+
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function checkAuthStatus() {
+    try {
+      const { data } = await supabase.auth.getSession();
+      setIsAuthenticated(!!data.session);
+      if (data.session) {
+        fetchMixes();
+        fetchTracks();
+      }
+    } catch (error) {
+      console.error('Error checking auth status:', error);
+      setIsAuthenticated(false);
+    }
+  }
 
   useEffect(() => {
     fetchTracks();
@@ -129,48 +191,129 @@ export default function LibraryScreen() {
     try {
       setIsLoading(true);
       setError(null);
+      
+      console.log(`Fetching tracks for tab: ${activeTab}, category: ${activeCategory}`);
 
       let query = supabase.from('audio_tracks').select('*');
 
+      // Base query based on active tab
       if (activeTab === 'built-in') {
         query = query.eq('is_built_in', true);
+        
+        // Apply built-in category filters
+        if (activeCategory !== 'all') {
+          query = query.eq('category', activeCategory.toLowerCase());
+        }
       } else if (activeTab === 'my-library') {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-          query = query.eq('user_id', user.id);
+          if (activeCategory === 'mixes') {
+            // Fetch only mixes
+            return fetchMixes();
+          } else if (activeCategory === 'uploads') {
+            // Fetch only user uploads
+            query = query.eq('user_id', user.id).eq('is_built_in', false);
+          } else {
+            // Fetch both mixes and uploads
+            const [tracks, mixes] = await Promise.all([
+              query.eq('user_id', user.id).eq('is_built_in', false),
+              fetchMixes()
+            ]);
+            // Combine tracks and mixes
+            return;
+          }
         }
       } else if (activeTab === 'community') {
         query = query.eq('is_public', true).eq('is_built_in', false);
+        
+        if (activeCategory !== 'all') {
+          query = query.eq('category', activeCategory.toLowerCase());
+        }
       }
 
-      if (activeCategory !== 'all') {
-        query = query.eq('category', activeCategory.toLowerCase());
+      const { data, error } = await query;
+
+      if (error) {
+        console.error('Error fetching tracks:', error);
+        throw error;
       }
 
-      const { data, error: fetchError } = await query;
-
-      if (fetchError) throw fetchError;
+      console.log(`Fetched ${data ? data.length : 0} tracks`);
+      
+      // Log sample data for debugging
+      if (data && data.length > 0) {
+        console.log('Sample track data:', data.slice(0, 2));
+      } else {
+        console.log('No tracks found with the current filters');
+      }
+      
       setTracks(data || []);
     } catch (err) {
-      console.error('Error fetching tracks:', err);
+      console.error('Error in fetchTracks:', err);
       setError(err instanceof Error ? err.message : 'Failed to load tracks');
+      
+      // Show alert for better visibility on mobile
+      alert(`Error loading tracks: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function handleUpload() {
+  async function handleUploadClick() {
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['audio/*'],
-        copyToCacheDirectory: true,
-      });
+      let file: AudioFile | File;
+      if (Platform.OS === 'web') {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'audio/*';
+        
+        const promise = new Promise<File>((resolve) => {
+          input.onchange = (e) => {
+            const target = e.target as HTMLInputElement;
+            if (target.files && target.files[0]) {
+              resolve(target.files[0]);
+            }
+          };
+        });
+        
+        input.click();
+        file = await promise;
+      } else {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: 'audio/*',
+          copyToCacheDirectory: true
+        });
 
-      if (result.canceled) {
-        return;
+        if (result.canceled) {
+          return;
+        }
+
+        file = {
+          name: result.assets[0].name,
+          uri: result.assets[0].uri,
+          type: result.assets[0].mimeType,
+          size: result.assets[0].size
+        };
       }
 
-      const file = result.assets[0];
+      setUploadDetails({
+        name: file.name.split('.')[0], // Default name from file
+        category: activeCategory === 'all' ? 'music' : activeCategory,
+        file
+      });
+      setShowUploadModal(true);
+    } catch (err) {
+      console.error('Error selecting file:', err);
+      setError(err instanceof Error ? err.message : 'Failed to select file');
+    }
+  }
+
+  async function handleUpload() {
+    try {
+      if (!uploadDetails.file) {
+        throw new Error('No file selected');
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
 
       if (!user) {
@@ -180,25 +323,44 @@ export default function LibraryScreen() {
       setIsLoading(true);
       setError(null);
 
-      const fileExt = file.name.split('.').pop();
+      const fileExt = uploadDetails.file.name.split('.').pop();
       const filePath = `${user.id}/${Date.now()}.${fileExt}`;
 
+      let fileData: Blob | File;
+      if (Platform.OS === 'web') {
+        fileData = uploadDetails.file as File;
+      } else if (isAudioFile(uploadDetails.file) && uploadDetails.file.uri) {
+        const base64 = await FileSystem.readAsStringAsync(uploadDetails.file.uri, {
+          encoding: FileSystem.EncodingType.Base64
+        });
+        
+        const byteString = atob(base64);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+        }
+        fileData = new Blob([ab], { type: `audio/${fileExt}` });
+      } else {
+        throw new Error('Invalid file format');
+      }
+
       const { error: uploadError, data } = await supabase.storage
-        .from('audio')
-        .upload(filePath, file);
+        .from('audio-files')  // Changed from 'audio' to 'audio-files'
+        .upload(filePath, fileData);
 
       if (uploadError) throw uploadError;
 
       const { data: { publicUrl } } = supabase.storage
-        .from('audio')
+        .from('audio-files')  // Changed from 'audio' to 'audio-files'
         .getPublicUrl(filePath);
 
       const { error: dbError } = await supabase
         .from('audio_tracks')
         .insert({
-          name: file.name,
+          name: uploadDetails.name,
           url: publicUrl,
-          category: activeCategory === 'all' ? 'music' : activeCategory,
+          category: uploadDetails.category.toLowerCase(),
           user_id: user.id,
           is_public: false,
           is_built_in: false,
@@ -206,6 +368,8 @@ export default function LibraryScreen() {
 
       if (dbError) throw dbError;
 
+      setShowUploadModal(false);
+      setUploadDetails({ name: '', category: '', file: null });
       fetchTracks();
     } catch (err) {
       console.error('Error uploading file:', err);
@@ -304,6 +468,8 @@ export default function LibraryScreen() {
 
   const handleMixPress = async (mixId: string) => {
     try {
+      console.log('Loading mix:', mixId);
+      
       // Fetch mix details
       const { data: mix, error: mixError } = await supabase
         .from('mixes')
@@ -312,31 +478,17 @@ export default function LibraryScreen() {
         .single();
 
       if (mixError) throw mixError;
+      console.log('Mix details:', mix);
 
-      // Fetch mix tracks
-      const { data: mixTracks, error: tracksError } = await supabase
-        .from('mix_tracks')
-        .select(`
-          *,
-          track:track_id (
-            id,
-            name,
-            url
-          )
-        `)
-        .eq('mix_id', mixId);
-
-      if (tracksError) throw tracksError;
-
-      // Navigate to mixer with mix data
+      // Navigate to mixer with mix ID and basic info
+      // The mixer component will fetch the tracks directly
       router.push({
         pathname: '/(tabs)/mixer',
         params: {
           mixId,
           mixName: mix.name,
           mixDuration: mix.duration,
-          mixIsPublic: mix.is_public,
-          mixTracks: JSON.stringify(mixTracks)
+          mixIsPublic: mix.is_public
         }
       });
     } catch (err) {
@@ -351,28 +503,28 @@ export default function LibraryScreen() {
 
     return (
       <TouchableOpacity 
-        style={styles.trackItem}
+        style={styles.itemCard}
         onPress={() => handleTrackSelect(item)}
       >
-        <View style={styles.trackInfo}>
-          <View style={[styles.trackIcon, isPlaying && styles.trackIconPlaying]}>
+        <View style={styles.itemInfo}>
+          <View style={[styles.itemIcon, isPlaying && styles.itemIconPlaying]}>
             <Music2 size={20} color={isPlaying ? '#6366f1' : '#fff'} />
           </View>
           <View>
-            <Text style={styles.trackName}>{item.name}</Text>
+            <Text style={styles.itemName}>{item.name}</Text>
             {isPlaying && (
               <Text style={styles.playingText}>Now Playing</Text>
             )}
           </View>
         </View>
 
-        <View style={styles.trackMeta}>
+        <View style={styles.itemMeta}>
           <View style={styles.categoryBadge}>
             <Text style={styles.categoryText}>{item.category}</Text>
           </View>
 
           {!selectMode && (
-            <View style={styles.trackActions}>
+            <View style={styles.itemActions}>
               <TouchableOpacity 
                 style={[styles.actionButton, isPlaying && styles.actionButtonActive]}
                 onPress={() => playSound(item)}
@@ -384,12 +536,19 @@ export default function LibraryScreen() {
                   <Play size={16} color="#6366f1" />
                 )}
               </TouchableOpacity>
+              
               {!item.is_built_in && (
                 <>
-                  <TouchableOpacity style={styles.actionButton}>
+                  <TouchableOpacity 
+                    style={styles.actionButton}
+                    onPress={() => handleEditTrack(item)}
+                  >
                     <Edit size={16} color="#6366f1" />
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.actionButton}>
+                  <TouchableOpacity 
+                    style={styles.actionButton}
+                    onPress={() => handleDeleteTrack(item)}
+                  >
                     <Trash2 size={16} color="#ef4444" />
                   </TouchableOpacity>
                 </>
@@ -409,187 +568,362 @@ export default function LibraryScreen() {
 
   const renderMix = ({ item }: { item: Mix }) => (
     <TouchableOpacity 
-      style={styles.mixItem}
+      style={styles.itemCard}
       onPress={() => handleMixPress(item.id)}
     >
-      <View style={styles.mixInfo}>
-        <View style={styles.mixIcon}>
-          <Music2 size={20} color="#fff" />
+      <View style={styles.itemInfo}>
+        <View style={styles.itemIcon}>
+          <Volume2 size={20} color="#fff" />
         </View>
         <View>
-          <Text style={styles.mixName}>{item.name}</Text>
-          <Text style={styles.mixDuration}>{item.duration} minutes</Text>
+          <Text style={styles.itemName}>{item.name}</Text>
+          <Text style={styles.itemSubtext}>{item.duration} minutes</Text>
         </View>
       </View>
       
-      <View style={styles.mixMeta}>
+      <View style={styles.itemMeta}>
         {item.is_public && (
-          <View style={styles.publicBadge}>
-            <Text style={styles.publicText}>Public</Text>
+          <View style={styles.categoryBadge}>
+            <Text style={styles.categoryText}>Public</Text>
           </View>
         )}
-        <TouchableOpacity style={styles.editButton}>
-          <Edit size={16} color="#6366f1" />
-        </TouchableOpacity>
+        <View style={styles.itemActions}>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleMixPress(item.id)}
+          >
+            <Volume2 size={16} color="#6366f1" />
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleEditMix(item)}
+          >
+            <Edit size={16} color="#6366f1" />
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleDeleteMix(item)}
+          >
+            <Trash2 size={16} color="#ef4444" />
+          </TouchableOpacity>
+        </View>
       </View>
     </TouchableOpacity>
   );
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.pageHeader}>
-        <Text style={styles.pageTitle}>Audio Library</Text>
-        <Text style={styles.pageSubtitle}>
-          Explore our collection of meditation sounds, music, and guided sessions
-        </Text>
-      </View>
+  const handleEditTrack = (track: Track) => {
+    console.log('Edit track:', track.id);
+  };
 
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false}
-        style={styles.tabsContainer}
-      >
-        {TABS.map(tab => (
-          <TouchableOpacity
-            key={tab.id}
-            style={[
-              styles.tab,
-              activeTab === tab.id && styles.activeTab
-            ]}
-            onPress={() => setActiveTab(tab.id)}
-          >
-            <tab.icon 
-              size={20} 
-              color={activeTab === tab.id ? '#fff' : '#666'} 
-            />
-            <Text style={[
-              styles.tabText,
-              activeTab === tab.id && styles.activeTabText
-            ]}>
-              {tab.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+  const handleDeleteTrack = async (track: Track) => {
+    try {
+      if (!window.confirm('Are you sure you want to delete this track?')) {
+        return;
+      }
 
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false}
-        style={styles.categoriesContainer}
-      >
-        {CATEGORIES.map(category => (
-          <TouchableOpacity
-            key={category.id}
-            style={[
-              styles.categoryButton,
-              activeCategory === category.id && styles.activeCategoryButton
-            ]}
-            onPress={() => setActiveCategory(category.id)}
-          >
-            <Text style={[
-              styles.categoryButtonText,
-              activeCategory === category.id && styles.activeCategoryButtonText
-            ]}>
-              {category.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      setIsLoading(true);
+      
+      // Delete from storage
+      const fileName = track.url.split('/').pop();
+      if (fileName) {
+        await supabase.storage
+          .from('audio-files')
+          .remove([fileName]);
+      }
 
-      <View style={styles.toolbar}>
-        <View style={styles.viewToggle}>
-          <TouchableOpacity 
-            style={[
-              styles.viewButton,
-              viewMode === 'list' && styles.activeViewButton
-            ]}
-            onPress={() => setViewMode('list')}
-          >
-            <Text style={[
-              styles.viewButtonText,
-              viewMode === 'list' && styles.activeViewButtonText
-            ]}>
-              List
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={[
-              styles.viewButton,
-              viewMode === 'grid' && styles.activeViewButton
-            ]}
-            onPress={() => setViewMode('grid')}
-          >
-            <Text style={[
-              styles.viewButtonText,
-              viewMode === 'grid' && styles.activeViewButtonText
-            ]}>
-              Grid
-            </Text>
-          </TouchableOpacity>
+      // Delete from database
+      const { error } = await supabase
+        .from('audio_tracks')
+        .delete()
+        .eq('id', track.id);
+
+      if (error) throw error;
+
+      // Refresh tracks list
+      fetchTracks();
+    } catch (err) {
+      console.error('Error deleting track:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete track');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEditMix = (mix: Mix) => {
+    router.push({
+      pathname: '/(tabs)/mixer',
+      params: {
+        mixId: mix.id,
+        mixName: mix.name,
+        mixDuration: mix.duration.toString(),
+        mixIsPublic: mix.is_public.toString()
+      }
+    });
+  };
+
+  const handleDeleteMix = async (mix: Mix) => {
+    try {
+      if (!window.confirm('Are you sure you want to delete this mix?')) {
+        return;
+      }
+
+      setIsLoading(true);
+
+      // Delete mix and its tracks
+      const { error } = await supabase
+        .from('mixes')
+        .delete()
+        .eq('id', mix.id);
+
+      if (error) throw error;
+
+      // Refresh mixes list
+      fetchMixes();
+    } catch (err) {
+      console.error('Error deleting mix:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete mix');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Get the current categories based on active tab
+  const getCurrentCategories = (): string[] => {
+    switch (activeTab) {
+      case 'built-in':
+        return BUILT_IN_CATEGORIES;
+      case 'my-library':
+        return MY_LIBRARY_CATEGORIES;
+      case 'community':
+        return COMMUNITY_CATEGORIES;
+      default:
+        return BUILT_IN_CATEGORIES;
+    }
+  };
+
+  const renderContent = () => {
+    if (isLoading) {
+      return (
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Loading...</Text>
         </View>
+      );
+    }
 
-        <TouchableOpacity 
-          style={styles.uploadButton}
-          onPress={handleUpload}
-          disabled={isLoading}
-        >
-          <Upload size={16} color="#fff" />
-          <Text style={styles.uploadButtonText}>
-            {isLoading ? 'Uploading...' : 'Upload Audio'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {activeTab === 'my-library' && (
-        <TouchableOpacity 
-          style={styles.myMixesButton}
-          onPress={() => setShowMyMixes(!showMyMixes)}
-        >
-          <View style={styles.myMixesHeader}>
-            <Music2 size={20} color="#6366f1" />
-            <Text style={styles.myMixesTitle}>My Mixes</Text>
-            <ChevronDown 
-              size={20} 
-              color="#6366f1"
-              style={[
-                styles.myMixesArrow,
-                showMyMixes && styles.myMixesArrowOpen
-              ]} 
-            />
-          </View>
-        </TouchableOpacity>
-      )}
-
-      {activeTab === 'my-library' && showMyMixes ? (
+    if (activeCategory === 'mixes' || (activeTab === 'my-library' && activeCategory === 'all')) {
+      return (
         <FlatList
           data={mixes}
           renderItem={renderMix}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.list}
           ListEmptyComponent={
-            isLoadingMixes ? (
-              <Text style={styles.loadingText}>Loading mixes...</Text>
-            ) : (
-              <Text style={styles.emptyText}>No mixes found</Text>
-            )
+            <Text style={styles.emptyText}>No mixes found</Text>
           }
         />
-      ) : (
-        <FlatList
-          data={tracks}
-          renderItem={renderTrack}
-          keyExtractor={item => item.id}
-          contentContainerStyle={styles.list}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>No tracks found</Text>
-          }
-        />
-      )}
+      );
+    }
 
+    return (
+      <FlatList
+        data={tracks}
+        renderItem={renderTrack}
+        keyExtractor={item => item.id}
+        contentContainerStyle={styles.list}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>No tracks found</Text>
+        }
+      />
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['bottom']}>
+      <View style={styles.content}>
+        <Text style={styles.title}>Library</Text>
+        
+        <View style={{gap: 0, marginBottom: 0}}>
+          {/* Tabs */}
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.tabsContainer}
+          >
+            {TABS.map(tab => (
+              <TouchableOpacity
+                key={tab.id}
+                style={[
+                  styles.tabButton,
+                  activeTab === tab.id && styles.activeTabButton
+                ]}
+                onPress={() => {
+                  setActiveTab(tab.id);
+                  setActiveCategory('all');
+                }}
+              >
+                <tab.icon size={18} color={activeTab === tab.id ? '#fff' : '#666'} />
+                <Text style={[
+                  styles.tabButtonText,
+                  activeTab === tab.id && styles.activeTabButtonText
+                ]}>
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          
+          {/* Categories */}
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.categoriesContainer}
+          >
+            {getCurrentCategories().map(category => (
+              <TouchableOpacity
+                key={category}
+                style={[
+                  styles.categoryButton,
+                  activeCategory === category && styles.activeCategoryButton
+                ]}
+                onPress={() => setActiveCategory(category)}
+              >
+                <Text style={[
+                  styles.categoryButtonText,
+                  activeCategory === category && styles.activeCategoryButtonText
+                ]}>
+                  {category.charAt(0).toUpperCase() + category.slice(1)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        
+        {/* View mode toggle */}
+          <View style={styles.viewModeContainer}>
+            <TouchableOpacity
+              style={[
+                styles.viewModeButton,
+                viewMode === 'list' && styles.activeViewModeButton
+              ]}
+              onPress={() => setViewMode('list')}
+            >
+              <Text style={styles.viewModeButtonText}>List</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.viewModeButton,
+                viewMode === 'grid' && styles.activeViewModeButton
+              ]}
+              onPress={() => setViewMode('grid')}
+            >
+              <Text style={styles.viewModeButtonText}>Grid</Text>
+            </TouchableOpacity>
+          </View>
+        
+        </View>
+        
+        {/* Content */}
+        <View style={styles.contentContainer}>
+          {renderContent()}
+        </View>
+      </View>
+      
+      <LoginOverlay 
+        visible={isAuthenticated === false} 
+        message="Please log in to access your sound library and saved mixes."
+        onLogin={() => setIsAuthenticated(true)}
+      />
+      
+      {/* Upload button */}
+      {activeTab === 'my-library' && (
+        <TouchableOpacity
+          style={styles.uploadButton}
+          onPress={handleUploadClick}
+        >
+          <Plus size={24} color="#fff" />
+        </TouchableOpacity>
+      )}
+      
+      {/* Upload modal */}
+      <Modal
+        visible={showUploadModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowUploadModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.uploadModal}>
+            <Text style={styles.modalTitle}>Upload Audio Track</Text>
+            
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Track Name</Text>
+              <TextInput
+                style={styles.input}
+                value={uploadDetails.name}
+                onChangeText={(text) => setUploadDetails(prev => ({ ...prev, name: text }))}
+                placeholder="Enter track name"
+                placeholderTextColor="#666"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Category</Text>
+              <ScrollView 
+                horizontal 
+                showsHorizontalScrollIndicator={false}
+                style={styles.categoryPicker}
+              >
+                {getCurrentCategories().map(category => (
+                  <TouchableOpacity
+                    key={category}
+                    style={[
+                      styles.categoryOption,
+                      uploadDetails.category === category && styles.categoryOptionSelected
+                    ]}
+                    onPress={() => setUploadDetails(prev => ({ ...prev, category: category }))}
+                  >
+                    <Text style={[
+                      styles.categoryOptionText,
+                      uploadDetails.category === category && styles.categoryOptionTextSelected
+                    ]}>
+                      {category.charAt(0).toUpperCase() + category.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={() => {
+                  setShowUploadModal(false);
+                  setUploadDetails({ name: '', category: '', file: null });
+                }}
+              >
+                <Text style={styles.modalButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[
+                  styles.modalButton, 
+                  styles.uploadModalButton,
+                  (!uploadDetails.name || !uploadDetails.category) && styles.modalButtonDisabled
+                ]}
+                onPress={handleUpload}
+                disabled={!uploadDetails.name || !uploadDetails.category}
+              >
+                <Text style={styles.modalButtonText}>Upload</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
+      {/* Confirm delete modal */}
       <Modal
         visible={showConfirmModal}
-        transparent={true}
         animationType="fade"
+        transparent={true}
         onRequestClose={() => setShowConfirmModal(false)}
       >
         <View style={styles.modalOverlay}>
@@ -618,16 +952,10 @@ export default function LibraryScreen() {
           </View>
         </View>
       </Modal>
-
+      
       {error && (
         <Text style={styles.errorText}>{error}</Text>
       )}
-
-      {isLoading && !tracks.length ? (
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading tracks...</Text>
-        </View>
-      ) : null}
     </SafeAreaView>
   );
 }
@@ -637,53 +965,57 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  pageHeader: {
-    padding: 20,
+  content: {
+    flex: 1,
+    padding: 16,
   },
-  pageTitle: {
+  contentContainer: {
+    flex: 1,
+  },
+  title: {
     fontSize: 32,
     fontWeight: 'bold',
     color: '#6366f1',
     marginBottom: 8,
   },
-  pageSubtitle: {
-    fontSize: 16,
-    color: '#666',
-  },
   tabsContainer: {
     paddingHorizontal: 20,
+    marginBottom: 4,
   },
-  tab: {
+  tabButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginRight: 16,
-    borderRadius: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 16,
     backgroundColor: '#1a1a1a',
-    gap: 8,
+    marginRight: 6,
+    gap: 4,
+    maxHeight: 30,
   },
-  activeTab: {
+  activeTabButton: {
     backgroundColor: '#6366f1',
   },
-  tabText: {
+  tabButtonText: {
     color: '#666',
     fontSize: 14,
     fontWeight: '500',
   },
-  activeTabText: {
+  activeTabButtonText: {
     color: '#fff',
   },
   categoriesContainer: {
     paddingHorizontal: 20,
-    marginTop: 16,
+    marginTop: 0,
+    marginBottom: 4,
   },
   categoryButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 16,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
     borderRadius: 16,
-    marginRight: 8,
     backgroundColor: '#1a1a1a',
+    marginRight: 6,
+    maxHeight: 28,
   },
   activeCategoryButton: {
     backgroundColor: '#6366f1',
@@ -695,76 +1027,179 @@ const styles = StyleSheet.create({
   activeCategoryButtonText: {
     color: '#fff',
   },
-  toolbar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  viewModeContainer: {
+    display: 'none',
+  },
+  viewModeButton: {
+    display: 'none',
+  },
+  activeViewModeButton: {
+    display: 'none',
+  },
+  viewModeButtonText: {
+    display: 'none',
+  },
+  uploadButton: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#6366f1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
-  viewToggle: {
-    flexDirection: 'row',
+  uploadModal: {
     backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 20,
+    width: '100%',
+    maxWidth: 400,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  label: {
+    color: '#fff',
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: '#262626',
     borderRadius: 8,
-    padding: 2,
+    padding: 12,
+    color: '#fff',
+    fontSize: 16,
   },
-  viewButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 6,
+  categoryPicker: {
+    flexDirection: 'row',
+    marginBottom: 8,
   },
-  activeViewButton: {
-    backgroundColor: '#333',
+  categoryOption: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    backgroundColor: '#262626',
+    marginRight: 8,
   },
-  viewButtonText: {
+  categoryOptionSelected: {
+    backgroundColor: '#6366f1',
+  },
+  categoryOptionText: {
     color: '#666',
     fontSize: 14,
   },
-  activeViewButtonText: {
+  categoryOptionTextSelected: {
     color: '#fff',
   },
-  uploadButton: {
+  modalButtons: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#6366f1',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginTop: 20,
   },
-  uploadButtonText: {
+  modalButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  cancelButton: {
+    backgroundColor: '#262626',
+  },
+  uploadModalButton: {
+    backgroundColor: '#6366f1',
+  },
+  modalButtonDisabled: {
+    opacity: 0.5,
+  },
+  modalButtonText: {
     color: '#fff',
     fontSize: 14,
     fontWeight: '500',
   },
-  list: {
-    padding: 20,
+  modalTitle: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 12,
   },
-  trackItem: {
+  itemCard: {
     backgroundColor: '#1a1a1a',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
   },
-  trackInfo: {
+  itemInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
   },
-  trackIcon: {
+  itemIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#6366f1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  itemIconPlaying: {
+    backgroundColor: '#818cf8',
+  },
+  itemName: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  itemSubtext: {
+    color: '#666',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  itemMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  itemActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  actionButton: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#333',
+    backgroundColor: '#262626',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
   },
-  trackIconPlaying: {
+  actionButtonActive: {
     backgroundColor: '#818cf8',
   },
-  trackName: {
+  categoryBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+    backgroundColor: '#6366f1',
+  },
+  categoryText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '500',
   },
   playingText: {
@@ -772,35 +1207,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
-  trackMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  categoryBadge: {
-    backgroundColor: '#374151',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 12,
-  },
-  categoryText: {
-    color: '#fff',
-    fontSize: 12,
-  },
-  trackActions: {
-    flexDirection: 'row',
-    gap: 4,
-  },
-  actionButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  progressBar: {
+    height: 2,
     backgroundColor: '#262626',
-    alignItems: 'center',
-    justifyContent: 'center',
+    marginTop: 8,
+    borderRadius: 1,
+    overflow: 'hidden',
   },
-  actionButtonActive: {
-    backgroundColor: '#818cf8',
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#6366f1',
   },
   loadingContainer: {
     flex: 1,
@@ -821,13 +1237,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 16,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
   confirmModal: {
     backgroundColor: '#1a1a1a',
     borderRadius: 12,
@@ -842,21 +1251,21 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   confirmText: {
-    color: '#999',
+    color: '#ccc',
     fontSize: 16,
     marginBottom: 20,
   },
   confirmButtons: {
     flexDirection: 'row',
+    justifyContent: 'flex-end',
     gap: 12,
   },
   confirmButton: {
-    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 12,
-    borderRadius: 8,
     gap: 8,
   },
   confirmButtonCancel: {
@@ -867,98 +1276,10 @@ const styles = StyleSheet.create({
   },
   confirmButtonText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  myMixesButton: {
-    marginHorizontal: 20,
-    marginVertical: 8,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    padding: 16,
-  },
-  myMixesHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  myMixesTitle: {
-    color: '#6366f1',
-    fontSize: 16,
-    fontWeight: '600',
-    flex: 1,
-  },
-  myMixesArrow: {
-    transform: [{ rotate: '0deg' }],
-  },
-  myMixesArrowOpen: {
-    transform: [{ rotate: '180deg' }],
-  },
-  mixItem: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  mixInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  mixIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#2563eb',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  mixName: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  mixDuration: {
-    color: '#666',
     fontSize: 14,
+    fontWeight: '500',
   },
-  mixMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  publicBadge: {
-    backgroundColor: '#374151',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 12,
-  },
-  publicText: {
-    color: '#fff',
-    fontSize: 12,
-  },
-  editButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#262626',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  progressBar: {
-    height: 2,
-    backgroundColor: '#262626',
-    marginTop: 8,
-    borderRadius: 1,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#6366f1',
+  list: {
+    padding: 20,
   },
 });
