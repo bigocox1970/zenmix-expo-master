@@ -460,7 +460,9 @@ export default function LibraryScreen() {
         params: {
           selectedTrackId: selectedTrack.id,
           selectedTrackName: selectedTrack.name,
-          mixerTrackId: trackId
+          selectedTrackUrl: selectedTrack.url,
+          mixerTrackId: trackId,
+          from: '/(tabs)/library'
         }
       });
     }
@@ -488,7 +490,8 @@ export default function LibraryScreen() {
           mixId,
           mixName: mix.name,
           mixDuration: mix.duration,
-          mixIsPublic: mix.is_public
+          mixIsPublic: mix.is_public,
+          from: '/(tabs)/library'
         }
       });
     } catch (err) {
@@ -656,7 +659,8 @@ export default function LibraryScreen() {
         mixId: mix.id,
         mixName: mix.name,
         mixDuration: mix.duration.toString(),
-        mixIsPublic: mix.is_public.toString()
+        mixIsPublic: mix.is_public.toString(),
+        from: '/(tabs)/library'
       }
     });
   };

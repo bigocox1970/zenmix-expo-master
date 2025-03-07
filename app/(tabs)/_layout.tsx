@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { Chrome as Home, Music2, Library, User, Shield } from 'lucide-react-native';
+import { Chrome as Home, Music2, Library, User, Shield, BarChart2 } from 'lucide-react-native';
 
 export default function TabLayout() {
   return (
@@ -39,6 +39,13 @@ export default function TabLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="stats"
+        options={{
+          title: 'Stats',
+          tabBarIcon: ({ color, size }) => <BarChart2 size={size} color={color} />,
         }}
       />
       <Tabs.Screen

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, FlatList, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Audio } from 'expo-av';
-import { Plus, Play, Pause, Save, Volume2, Trash2, Music2, Search, X } from 'lucide-react-native';
+import { Plus, Play, Pause, Save, Volume2, Trash2, Music2, Search, X, RefreshCw } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams, router } from 'expo-router';
 import { TabletModal } from '@/components/TabletModal';
@@ -58,7 +58,7 @@ export default function MixerScreen() {
     isPublic: false,
   });
 
-  // Initialize with only 4 tracks
+  // Initialize with only 4 empty tracks
   const [tracks, setTracks] = useState<Track[]>([
     { id: 'track-0', name: '', volume: 1, isPlaying: false, loopTime: 30 },
     { id: 'track-1', name: '', volume: 1, isPlaying: false, loopTime: 30 },
@@ -97,6 +97,67 @@ export default function MixerScreen() {
         { id: `track-${prev.length}`, name: '', volume: 1, isPlaying: false, loopTime: 30 },
       ]);
     }
+  };
+
+  // Reset mixer to a new state
+  const resetMixer = () => {
+    // Stop any playing audio
+    Object.keys(audioRefs.current).forEach(async (key) => {
+      const audioRef = audioRefs.current[key];
+      if (Platform.OS === 'web') {
+        if (audioRef?.element) {
+          try {
+            audioRef.element.pause();
+            audioRef.element.src = '';
+          } catch (err) {
+            console.error('Error stopping web audio:', err);
+          }
+        }
+      } else {
+        if (audioRef?.sound) {
+          try {
+            await audioRef.sound.stopAsync();
+            await audioRef.sound.unloadAsync();
+          } catch (err) {
+            console.error('Error stopping mobile audio:', err);
+          }
+        }
+      }
+    });
+
+    // Clear audio refs
+    audioRefs.current = {};
+    
+    // Reset state
+    setSettings({
+      name: '',
+      duration: 30,
+      isPublic: false,
+    });
+    
+    setTracks([
+      { id: 'track-0', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+      { id: 'track-1', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+      { id: 'track-2', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+      { id: 'track-3', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+    ]);
+    
+    setIsMasterPlaying(false);
+    setMasterProgress(0);
+    setTrackProgress({});
+    
+    // Clear any progress timers
+    if (progressInterval.current) {
+      clearInterval(progressInterval.current);
+      progressInterval.current = undefined;
+    }
+    
+    Object.keys(progressTimers.current).forEach(key => {
+      clearInterval(progressTimers.current[key]);
+    });
+    progressTimers.current = {};
+    
+    console.log('Mixer reset to new state');
   };
 
   // Handle adding a sound to a track
@@ -189,6 +250,50 @@ export default function MixerScreen() {
           console.error('Error loading mix data:', err);
           alert('Failed to load mix data. Please try again.');
         }
+      } else if (params.selectedTrackId && params.selectedTrackName && params.mixerTrackId) {
+        // Handle case where a track is selected from the library
+        console.log('Track selected from library:', params.selectedTrackId);
+        
+        try {
+          // Create a new mix with the selected track
+          const trackIndex = parseInt(params.mixerTrackId as string);
+          
+          if (!isNaN(trackIndex) && trackIndex >= 0 && trackIndex < tracks.length) {
+            // Create a copy of the tracks array
+            const newTracks = [...tracks];
+            
+            // Update the specified track with the selected sound
+            newTracks[trackIndex] = {
+              ...newTracks[trackIndex],
+              name: params.selectedTrackName as string,
+              audioTrackId: params.selectedTrackId as string,
+              url: params.selectedTrackUrl as string || '',
+            };
+            
+            console.log('Updated tracks with selected sound:', newTracks);
+            setTracks(newTracks);
+          } else {
+            console.error('Invalid track index:', trackIndex);
+          }
+        } catch (err) {
+          console.error('Error setting up track:', err);
+        }
+      } else {
+        // If no mixId is provided, ensure we have a clean state
+        console.log('No mix ID provided, initializing new mix');
+        setSettings({
+          name: '',
+          duration: 30,
+          isPublic: false,
+        });
+        
+        // Reset tracks to empty
+        setTracks([
+          { id: 'track-0', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+          { id: 'track-1', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+          { id: 'track-2', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+          { id: 'track-3', name: '', volume: 1, isPlaying: false, loopTime: 30 },
+        ]);
       }
     };
     
@@ -1058,12 +1163,30 @@ export default function MixerScreen() {
       <View style={styles.content}>
         <View style={styles.header}>
           <Text style={styles.title}>Mixer</Text>
-          <TouchableOpacity 
-            style={styles.closeButton}
-            onPress={() => router.back()}
-          >
-            <X size={24} color="#6366f1" />
-          </TouchableOpacity>
+          <View style={styles.headerButtons}>
+            <TouchableOpacity 
+              style={styles.newMixButton}
+              onPress={resetMixer}
+            >
+              <RefreshCw size={20} color="#6366f1" />
+              <Text style={styles.newMixButtonText}>Clear All Data</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.closeButton}
+              onPress={() => {
+                // Check if we came from somewhere specific
+                if (params?.from) {
+                  // Type assertion to handle the string type
+                  router.push(params.from as any);
+                } else {
+                  // Fallback to library if no specific origin
+                  router.push('/(tabs)/library');
+                }
+              }}
+            >
+              <X size={24} color="#6366f1" />
+            </TouchableOpacity>
+          </View>
         </View>
         
         <TextInput
@@ -1257,7 +1380,7 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    padding: 16,
+    padding: 15,
   },
   scrollContainer: {
     flex: 1,
@@ -1269,15 +1392,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: 16,
-    marginBottom: 16,
+    marginBottom: 15,
   },
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
+    fontSize: 24,
     color: '#fff',
-    marginBottom: 12,
+    fontWeight: 'bold',
   },
   nameInput: {
     backgroundColor: '#262626',
@@ -1624,5 +1744,22 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  newMixButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#444',
+    padding: 8,
+    borderRadius: 6,
+  },
+  newMixButtonText: {
+    color: '#fff',
+    marginLeft: 5,
+    fontWeight: '500',
   },
 });

@@ -8,8 +8,27 @@ export default {
     scheme: 'myapp',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
+    splash: {
+      image: './assets/images/splash.png',
+      resizeMode: 'contain',
+      backgroundColor: '#000000'
+    },
     ios: {
-      supportsTablet: true
+      supportsTablet: true,
+      bundleIdentifier: 'com.zenmix.app',
+      buildNumber: '1.0.0',
+      infoPlist: {
+        UIBackgroundModes: ['audio']
+      }
+    },
+    android: {
+      adaptiveIcon: {
+        foregroundImage: './assets/images/adaptive-icon.png',
+        backgroundColor: '#000000'
+      },
+      package: 'com.zenmix.app',
+      versionCode: 1,
+      softwareKeyboardLayoutMode: 'pan'
     },
     web: {
       bundler: 'metro',
@@ -43,9 +62,18 @@ export default {
         `
       }
     },
-    plugins: ['expo-router'],
+    plugins: [
+      'expo-router',
+      [
+        'expo-av',
+        {
+          microphonePermission: 'Allow $(PRODUCT_NAME) to access your microphone.'
+        }
+      ]
+    ],
     experiments: {
-      typedRoutes: true
+      typedRoutes: true,
+      tsconfigPaths: true
     },
     extra: {
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,

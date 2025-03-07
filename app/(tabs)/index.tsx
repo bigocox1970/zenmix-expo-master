@@ -1,7 +1,7 @@
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, useWindowDimensions } from 'react-native';
 import { useState, useEffect } from 'react';
 import { router } from 'expo-router';
-import { Clock, Calendar, TrendingUp, CirclePlay as PlayCircle, Timer, ChevronRight, Terminal } from 'lucide-react-native';
+import { Clock, Calendar, TrendingUp, CirclePlay as PlayCircle, Timer, ChevronRight } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '@/lib/supabase';
 
@@ -36,8 +36,8 @@ export default function HomeScreen() {
 
   useEffect(() => {
     fetchUserStats();
-    fetchRecommendedMixes();
     fetchUserProfile();
+    fetchRecommendedMixes();
     setGreeting(getGreeting());
   }, []);
 
@@ -94,6 +94,10 @@ export default function HomeScreen() {
     }
   }
 
+  function calculateStreak(sessions: any[]): number {
+    return 5; // Placeholder
+  }
+
   async function fetchRecommendedMixes() {
     try {
       setLoading(true);
@@ -138,27 +142,16 @@ export default function HomeScreen() {
     }
   }
 
-  function calculateStreak(sessions: any[]): number {
-    return 5; // Placeholder
-  }
-
   return (
-    <View style={styles.container}>
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.welcomeSection}>
-          <View>
-            <Text style={styles.greeting}>{greeting}</Text>
-            <Text style={styles.welcomeTitle}>{nickname}</Text>
-          </View>
-          <TouchableOpacity 
-            style={styles.startButton}
-            onPress={() => router.push('/(tabs)/mixer')}
-          >
-            <PlayCircle size={24} color="#fff" />
-            <Text style={styles.startButtonText}>Start Session</Text>
-          </TouchableOpacity>
-        </View>
+    <ScrollView style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.greeting}>{greeting}</Text>
+        <Text style={styles.welcomeText}>
+          {nickname ? nickname : 'Welcome to ZenMix'}
+        </Text>
+      </View>
 
+      <View style={styles.statsContainer}>
         <View style={styles.statsSection}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Your Progress</Text>
@@ -228,7 +221,7 @@ export default function HomeScreen() {
 
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recommended for You</Text>
+            <Text style={styles.sectionTitle}>Recommended</Text>
             <TouchableOpacity onPress={() => router.push('/(tabs)/library')}>
               <Text style={styles.seeAllButton}>See All</Text>
             </TouchableOpacity>
@@ -249,7 +242,10 @@ export default function HomeScreen() {
                 ]}
                 onPress={() => router.push({
                   pathname: '/(tabs)/mixer',
-                  params: { mixId: mix.id }
+                  params: { 
+                    mixId: mix.id,
+                    from: '/(tabs)' 
+                  }
                 })}
               >
                 <Image 
@@ -296,8 +292,8 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
         </View>
-      </ScrollView>
-    </View>
+      </View>
+    </ScrollView>
   );
 }
 
@@ -306,41 +302,24 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  content: {
-    flex: 1,
-  },
-  welcomeSection: {
+  header: {
     padding: 20,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
   },
   greeting: {
     fontSize: 16,
     color: '#6366f1',
     marginBottom: 4,
   },
-  welcomeTitle: {
+  welcomeText: {
     fontSize: 24,
     fontWeight: 'bold',
     color: '#fff',
   },
-  startButton: {
-    backgroundColor: '#6366f1',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  startButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+  statsContainer: {
+    padding: 20,
   },
   statsSection: {
-    padding: 20,
+    marginBottom: 24,
   },
   section: {
     marginBottom: 24,
@@ -467,5 +446,9 @@ const styles = StyleSheet.create({
   statLabelLight: {
     color: 'rgba(255, 255, 255, 0.9)',
     fontWeight: '500',
+  },
+  seeAllText: {
+    color: '#6366f1',
+    fontSize: 16,
   },
 });
