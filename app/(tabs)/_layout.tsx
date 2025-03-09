@@ -21,17 +21,17 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="mixer"
-        options={{
-          title: 'Mixer',
-          tabBarIcon: ({ color, size }) => <Music2 size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="library"
         options={{
           title: 'Library',
           tabBarIcon: ({ color, size }) => <Library size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="mixer2"
+        options={{
+          title: 'Mixer',
+          tabBarIcon: ({ color, size }) => <Music2 size={size} color={color} />,
         }}
       />
       <Tabs.Screen
@@ -53,6 +53,12 @@ export default function TabLayout() {
         options={{
           title: 'Admin',
           tabBarIcon: ({ color, size }) => <Shield size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="mixer"
+        options={{
+          href: null, // Hide this tab but keep the route accessible
         }}
       />
     </Tabs>

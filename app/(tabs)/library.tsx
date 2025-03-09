@@ -171,6 +171,21 @@ export default function LibraryScreen() {
       
       if (!user) return;
 
+      // First try to fetch from mixes_v2 table
+      const { data: v2Data, error: v2Error } = await supabase
+        .from('mixes_v2')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (!v2Error && v2Data && v2Data.length > 0) {
+        console.log('Fetched mixes from mixes_v2 table:', v2Data.length);
+        setMixes(v2Data);
+        return;
+      }
+
+      // Fall back to old mixes table if no data in mixes_v2
+      console.log('No mixes found in mixes_v2 table, falling back to old table');
       const { data, error } = await supabase
         .from('mixes')
         .select('*')
@@ -456,7 +471,7 @@ export default function LibraryScreen() {
   const handleConfirmTrackSelection = () => {
     if (selectedTrack && trackId) {
       router.push({
-        pathname: '/(tabs)/mixer',
+        pathname: '/(tabs)/mixer2',
         params: {
           selectedTrackId: selectedTrack.id,
           selectedTrackName: selectedTrack.name,
@@ -472,7 +487,32 @@ export default function LibraryScreen() {
     try {
       console.log('Loading mix:', mixId);
       
-      // Fetch mix details
+      // First try to fetch from mixes_v2 table
+      const { data: mixV2, error: mixV2Error } = await supabase
+        .from('mixes_v2')
+        .select('*')
+        .eq('id', mixId)
+        .single();
+        
+      if (!mixV2Error && mixV2) {
+        console.log('Mix details from mixes_v2:', mixV2);
+        
+        // Navigate to mixer2 with mix ID and basic info
+        router.push({
+          pathname: '/(tabs)/mixer2',
+          params: {
+            mixId,
+            mixName: mixV2.name,
+            mixDuration: mixV2.duration,
+            mixIsPublic: mixV2.is_public,
+            from: '/(tabs)/library'
+          }
+        });
+        return;
+      }
+      
+      // Fall back to old mixes table if not found in mixes_v2
+      console.log('Mix not found in mixes_v2, falling back to old table');
       const { data: mix, error: mixError } = await supabase
         .from('mixes')
         .select('*')
@@ -480,12 +520,11 @@ export default function LibraryScreen() {
         .single();
 
       if (mixError) throw mixError;
-      console.log('Mix details:', mix);
+      console.log('Mix details from old table:', mix);
 
-      // Navigate to mixer with mix ID and basic info
-      // The mixer component will fetch the tracks directly
+      // Navigate to mixer2 with mix ID and basic info
       router.push({
-        pathname: '/(tabs)/mixer',
+        pathname: '/(tabs)/mixer2',
         params: {
           mixId,
           mixName: mix.name,
@@ -654,7 +693,7 @@ export default function LibraryScreen() {
 
   const handleEditMix = (mix: Mix) => {
     router.push({
-      pathname: '/(tabs)/mixer',
+      pathname: '/(tabs)/mixer2',
       params: {
         mixId: mix.id,
         mixName: mix.name,
@@ -673,13 +712,42 @@ export default function LibraryScreen() {
 
       setIsLoading(true);
 
-      // Delete mix and its tracks
+      // Try to delete from mixes_v2 first
+      try {
+        const { error: v2Error } = await supabase
+          .from('mixes_v2')
+          .delete()
+          .eq('id', mix.id);
+          
+        if (v2Error) {
+          console.error('Error deleting from mixes_v2:', v2Error);
+          // Continue with old table deletion even if this fails
+        } else {
+          console.log('Successfully deleted mix from mixes_v2 table');
+        }
+      } catch (v2Error) {
+        console.error('Error deleting from mixes_v2:', v2Error);
+        // Continue with old table deletion even if this fails
+      }
+
+      // Delete from old mixes table
       const { error } = await supabase
         .from('mixes')
         .delete()
         .eq('id', mix.id);
 
       if (error) throw error;
+
+      // Delete mix tracks from mix_tracks table
+      const { error: tracksError } = await supabase
+        .from('mix_tracks')
+        .delete()
+        .eq('mix_id', mix.id);
+        
+      if (tracksError) {
+        console.error('Error deleting mix tracks:', tracksError);
+        // Continue even if this fails
+      }
 
       // Refresh mixes list
       fetchMixes();
