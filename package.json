@@ -7,7 +7,7 @@
     "dev": "expo start --web",
     "dev:tunnel": "expo start --tunnel",
     "build:web": "expo export --platform web",
-    "build:netlify": "npm install --force && expo export --platform web",
+    "build:netlify": "npm install --legacy-peer-deps --force && expo export --platform web",
     "lint": "expo lint"
   },
   "dependencies": {
