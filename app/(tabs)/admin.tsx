@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, FlatList, TouchableOpacity, Image, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { User, Ban, Crown, Search, Shield, ShieldAlert, ShieldCheck, UserCheck, UserX } from 'lucide-react-native';
+import { User, Ban, Crown, Search, Shield, ShieldAlert, ShieldCheck, UserCheck, UserX, Upload, Music } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import LoginOverlay from '@/components/LoginOverlay';
+import * as DocumentPicker from 'expo-document-picker';
 
 interface Profile {
   id: string;
@@ -16,6 +17,14 @@ interface Profile {
   created_at: string;
 }
 
+interface AudioUpload {
+  name: string;
+  category: string;
+  file?: DocumentPicker.DocumentPickerResult;
+}
+
+const CATEGORIES = ['nature', 'music', 'voice', 'beats', 'uploads', 'mixes'];
+
 export default function AdminScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState<Profile[]>([]);
@@ -23,6 +32,12 @@ export default function AdminScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [showUploadSection, setShowUploadSection] = useState(false);
+  const [audioUpload, setAudioUpload] = useState<AudioUpload>({
+    name: '',
+    category: CATEGORIES[0],
+  });
+  const [uploadStatus, setUploadStatus] = useState<string>('');
 
   useEffect(() => {
     checkAuthStatus();
@@ -111,6 +126,91 @@ export default function AdminScreen() {
     }
   }
 
+  const handleFilePick = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'audio/*',
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled) {
+        setAudioUpload(prev => ({ ...prev, file: result }));
+        setUploadStatus('File selected: ' + result.assets[0].name);
+      }
+    } catch (err) {
+      console.error('Error picking file:', err);
+      setUploadStatus('Error selecting file');
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!audioUpload.file || audioUpload.file.canceled) {
+      setUploadStatus('Please select a file first');
+      return;
+    }
+
+    if (!audioUpload.name.trim()) {
+      setUploadStatus('Please enter a name for the track');
+      return;
+    }
+
+    try {
+      setUploadStatus('Uploading...');
+
+      const file = audioUpload.file.assets[0];
+      const fileExt = file.name.split('.').pop();
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) throw new Error('No user found');
+      
+      const filePath = `${user.id}/${Date.now()}.${fileExt}`;
+
+      // Convert file to blob for upload
+      const response = await fetch(file.uri);
+      const blob = await response.blob();
+
+      console.log('Attempting to upload file:', filePath);
+      const { error: uploadError } = await supabase.storage
+        .from('audio-files')
+        .upload(filePath, blob);
+
+      if (uploadError) {
+        console.error('Storage upload error:', uploadError);
+        throw uploadError;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('audio-files')
+        .getPublicUrl(filePath);
+
+      console.log('File uploaded successfully, public URL:', publicUrl);
+
+      const { error: dbError } = await supabase
+        .from('audio_tracks')
+        .insert({
+          name: audioUpload.name,
+          category: audioUpload.category,
+          url: publicUrl,
+          user_id: user.id,
+          is_public: false,
+          is_built_in: false,
+          duration: 0,
+        });
+
+      if (dbError) {
+        console.error('Database insert error:', dbError);
+        throw dbError;
+      }
+
+      setUploadStatus('Upload successful!');
+      setAudioUpload({ name: '', category: CATEGORIES[0] });
+    } catch (error) {
+      console.error('Error uploading:', error);
+      setUploadStatus('Upload failed. Please try again.');
+    }
+  };
+
   const renderUserCard = ({ item }: { item: Profile }) => (
     <View style={styles.userCard}>
       <View style={styles.userInfo}>
@@ -170,13 +270,90 @@ export default function AdminScreen() {
     </View>
   );
 
+  const renderUploadSection = () => (
+    <View style={styles.uploadSection}>
+      <Text style={styles.sectionTitle}>Upload Audio Track</Text>
+      
+      <TextInput
+        style={styles.input}
+        placeholder="Track Name"
+        placeholderTextColor="#666"
+        value={audioUpload.name}
+        onChangeText={name => setAudioUpload(prev => ({ ...prev, name }))}
+      />
+
+      <View style={styles.categoryContainer}>
+        <Text style={styles.categoryLabel}>Category:</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+          {CATEGORIES.map(category => (
+            <TouchableOpacity
+              key={category}
+              style={[
+                styles.categoryButton,
+                audioUpload.category === category && styles.categoryButtonActive
+              ]}
+              onPress={() => setAudioUpload(prev => ({ ...prev, category }))}
+            >
+              <Text style={[
+                styles.categoryButtonText,
+                audioUpload.category === category && styles.categoryButtonTextActive
+              ]}>
+                {category}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+
+      <View style={styles.uploadButtons}>
+        <TouchableOpacity style={styles.uploadButton} onPress={handleFilePick}>
+          <Upload size={20} color="#fff" />
+          <Text style={styles.uploadButtonText}>Select File</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[styles.uploadButton, !audioUpload.file && styles.uploadButtonDisabled]}
+          onPress={handleUpload}
+          disabled={!audioUpload.file}
+        >
+          <Music size={20} color="#fff" />
+          <Text style={styles.uploadButtonText}>Upload Track</Text>
+        </TouchableOpacity>
+      </View>
+
+      {uploadStatus ? (
+        <Text style={[
+          styles.uploadStatus,
+          uploadStatus.includes('Error') && styles.uploadStatusError,
+          uploadStatus.includes('success') && styles.uploadStatusSuccess
+        ]}>
+          {uploadStatus}
+        </Text>
+      ) : null}
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <View style={styles.content}>
-        <Text style={styles.title}>Admin Dashboard</Text>
+        <View style={styles.header}>
+          <Text style={styles.title}>Admin Dashboard</Text>
+          {isAdmin && (
+            <TouchableOpacity
+              style={styles.toggleButton}
+              onPress={() => setShowUploadSection(!showUploadSection)}
+            >
+              <Music size={24} color="#fff" />
+              <Text style={styles.toggleButtonText}>
+                {showUploadSection ? 'Show Users' : 'Upload Audio'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
         
         {loading ? (
           <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#6366f1" />
             <Text style={styles.loadingText}>Loading...</Text>
           </View>
         ) : error ? (
@@ -189,6 +366,8 @@ export default function AdminScreen() {
               You do not have permission to access this page.
             </Text>
           </View>
+        ) : showUploadSection ? (
+          renderUploadSection()
         ) : (
           <>
             <View style={styles.searchContainer}>
@@ -386,6 +565,106 @@ const styles = StyleSheet.create({
   emptyText: {
     color: '#666',
     fontSize: 16,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  toggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2C2C2C',
+    padding: 8,
+    borderRadius: 8,
+    gap: 8,
+  },
+  toggleButtonText: {
+    color: '#fff',
+    fontSize: 14,
+  },
+  uploadSection: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 16,
+    gap: 16,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: '#2C2C2C',
+    borderRadius: 8,
+    padding: 12,
+    color: '#fff',
+    fontSize: 16,
+  },
+  categoryContainer: {
+    gap: 8,
+  },
+  categoryLabel: {
+    color: '#fff',
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  categoryScroll: {
+    flexGrow: 0,
+  },
+  categoryButton: {
+    backgroundColor: '#2C2C2C',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginRight: 8,
+  },
+  categoryButtonActive: {
+    backgroundColor: '#6366f1',
+  },
+  categoryButtonText: {
+    color: '#666',
+    fontSize: 14,
+    textTransform: 'capitalize',
+  },
+  categoryButtonTextActive: {
+    color: '#fff',
+  },
+  uploadButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  uploadButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#6366f1',
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  uploadButtonDisabled: {
+    backgroundColor: '#2C2C2C',
+    opacity: 0.5,
+  },
+  uploadButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  uploadStatus: {
+    color: '#666',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  uploadStatusError: {
+    color: '#ef4444',
+  },
+  uploadStatusSuccess: {
+    color: '#22c55e',
   },
 }); 
 

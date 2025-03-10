@@ -61,6 +61,12 @@ export default function TabLayout() {
           href: null, // Hide this tab but keep the route accessible
         }}
       />
+      <Tabs.Screen
+        name="minimal-audio-fix"
+        options={{
+          href: null, // Hide this tab but keep the route accessible
+        }}
+      />
     </Tabs>
   );
 }

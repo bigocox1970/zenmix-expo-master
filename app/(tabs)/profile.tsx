@@ -588,9 +588,9 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   title: {
-    fontSize: 32,
+    fontSize: 24,
     fontWeight: 'bold',
-    color: '#6366f1',
+    color: '#fff',
     marginBottom: 24,
   },
   loadingContainer: {

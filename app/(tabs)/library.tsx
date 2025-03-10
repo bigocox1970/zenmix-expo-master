@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, FlatList, Platform, Modal } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, FlatList, Platform, Modal, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect, useRef } from 'react';
 import { Audio } from 'expo-av';
@@ -29,6 +29,8 @@ interface Mix {
   name: string;
   duration: number;
   is_public: boolean;
+  is_built_in: boolean;
+  category: string;
   created_at: string;
   user_id: string;
 }
@@ -52,6 +54,14 @@ interface UploadDetails {
   file: AudioFile | File | null;
 }
 
+interface EditDetails {
+  id: string;
+  name: string;
+  category: string;
+  is_built_in: boolean;
+  type: 'track' | 'mix';
+}
+
 function isAudioFile(file: AudioFile | File): file is AudioFile {
   return 'uri' in file;
 }
@@ -62,11 +72,12 @@ type ObjectCategory = { id: string; label: string };
 type Category = StringCategory | ObjectCategory;
 
 // Define category constants
-const BUILT_IN_CATEGORIES = ['all', 'nature', 'music', 'meditation', 'voice', 'binaural'];
+const BUILT_IN_CATEGORIES = ['all', 'nature', 'music', 'meditation', 'voice', 'binaural', 'mixes'];
 const MY_LIBRARY_CATEGORIES = ['all', 'uploads', 'mixes', 'favorites'];
 const COMMUNITY_CATEGORIES = ['all', 'popular', 'recent', 'featured'];
 
 const TABS = [
+  { id: 'all', label: 'All Sounds', icon: Music2 },
   { id: 'built-in', label: 'Built-in Sounds', icon: Music2 },
   { id: 'my-library', label: 'My Library', icon: Music2 },
   { id: 'community', label: 'Community', icon: Users },
@@ -89,6 +100,7 @@ export default function LibraryScreen() {
   const [mixes, setMixes] = useState<Mix[]>([]);
   const [isLoadingMixes, setIsLoadingMixes] = useState(false);
   const [playingProgress, setPlayingProgress] = useState<{ [key: string]: number }>({});
+  const [searchQuery, setSearchQuery] = useState('');
   const audioRef = useRef<AudioRef>({});
   const progressInterval = useRef<NodeJS.Timeout>();
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -98,6 +110,17 @@ export default function LibraryScreen() {
     file: null
   });
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editDetails, setEditDetails] = useState<EditDetails>({
+    id: '',
+    name: '',
+    category: 'mixes',
+    is_built_in: false,
+    type: 'track'
+  });
+  const [user, setUser] = useState<any>(null);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -145,6 +168,15 @@ export default function LibraryScreen() {
       const { data } = await supabase.auth.getSession();
       setIsAuthenticated(!!data.session);
       if (data.session) {
+        setUser(data.session.user);
+        // Check if user is admin
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('is_admin')
+          .eq('id', data.session.user.id)
+          .single();
+        
+        setIsAdmin(profile?.is_admin || false);
         fetchMixes();
         fetchTracks();
       }
@@ -169,14 +201,30 @@ export default function LibraryScreen() {
       setIsLoadingMixes(true);
       const { data: { user } } = await supabase.auth.getUser();
       
-      if (!user) return;
+      let query = supabase.from('mixes_v2').select('*');
 
-      // First try to fetch from mixes_v2 table
-      const { data: v2Data, error: v2Error } = await supabase
-        .from('mixes_v2')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+      // Filter based on active tab
+      if (activeTab === 'all') {
+        // Show all mixes without filtering by built-in status
+        query = query;
+      } else if (activeTab === 'built-in') {
+        // Show only built-in mixes
+        query = query.eq('is_built_in', true);
+      } else if (activeTab === 'my-library') {
+        // Show user's mixes
+        if (!user) return;
+        query = query.eq('user_id', user.id);
+      } else if (activeTab === 'community') {
+        // Show public, non-built-in mixes
+        query = query
+          .eq('is_public', true)
+          .eq('is_built_in', false);
+      }
+
+      // Order by creation date
+      query = query.order('created_at', { ascending: false });
+
+      const { data: v2Data, error: v2Error } = await query;
 
       if (!v2Error && v2Data && v2Data.length > 0) {
         console.log('Fetched mixes from mixes_v2 table:', v2Data.length);
@@ -186,11 +234,25 @@ export default function LibraryScreen() {
 
       // Fall back to old mixes table if no data in mixes_v2
       console.log('No mixes found in mixes_v2 table, falling back to old table');
-      const { data, error } = await supabase
-        .from('mixes')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+      let oldQuery = supabase.from('mixes').select('*');
+
+      // Apply the same filters to old table
+      if (activeTab === 'all') {
+        oldQuery = oldQuery.eq('is_built_in', false);
+      } else if (activeTab === 'built-in') {
+        oldQuery = oldQuery.eq('is_built_in', true);
+      } else if (activeTab === 'my-library') {
+        if (!user) return;
+        oldQuery = oldQuery.eq('user_id', user.id);
+      } else if (activeTab === 'community') {
+        oldQuery = oldQuery
+          .eq('is_public', true)
+          .eq('is_built_in', false);
+      }
+
+      oldQuery = oldQuery.order('created_at', { ascending: false });
+
+      const { data, error } = await oldQuery;
 
       if (error) throw error;
       setMixes(data || []);
@@ -212,12 +274,24 @@ export default function LibraryScreen() {
       let query = supabase.from('audio_tracks').select('*');
 
       // Base query based on active tab
-      if (activeTab === 'built-in') {
-        query = query.eq('is_built_in', true);
-        
-        // Apply built-in category filters
+      if (activeTab === 'all') {
+        // For all tab, show everything that's not built-in
+        query = query.eq('is_built_in', false);
         if (activeCategory !== 'all') {
           query = query.eq('category', activeCategory.toLowerCase());
+        }
+      } else if (activeTab === 'built-in') {
+        if (activeCategory === 'mixes') {
+          // For mixes category, fetch tracks that are in the mixes category and are built-in
+          query = query
+            .eq('category', 'mixes')
+            .eq('is_built_in', true);
+        } else {
+          query = query.eq('is_built_in', true);
+          // Apply built-in category filters
+          if (activeCategory !== 'all') {
+            query = query.eq('category', activeCategory.toLowerCase());
+          }
         }
       } else if (activeTab === 'my-library') {
         const { data: { user } } = await supabase.auth.getUser();
@@ -539,122 +613,15 @@ export default function LibraryScreen() {
     }
   };
 
-  const renderTrack = ({ item }: { item: Track }) => {
-    const isPlaying = playingTrackId === item.id;
-    const progress = playingProgress[item.id] || 0;
-
-    return (
-      <TouchableOpacity 
-        style={styles.itemCard}
-        onPress={() => handleTrackSelect(item)}
-      >
-        <View style={styles.itemInfo}>
-          <View style={[styles.itemIcon, isPlaying && styles.itemIconPlaying]}>
-            <Music2 size={20} color={isPlaying ? '#6366f1' : '#fff'} />
-          </View>
-          <View>
-            <Text style={styles.itemName}>{item.name}</Text>
-            {isPlaying && (
-              <Text style={styles.playingText}>Now Playing</Text>
-            )}
-          </View>
-        </View>
-
-        <View style={styles.itemMeta}>
-          <View style={styles.categoryBadge}>
-            <Text style={styles.categoryText}>{item.category}</Text>
-          </View>
-
-          {!selectMode && (
-            <View style={styles.itemActions}>
-              <TouchableOpacity 
-                style={[styles.actionButton, isPlaying && styles.actionButtonActive]}
-                onPress={() => playSound(item)}
-                disabled={isLoading}
-              >
-                {isPlaying ? (
-                  <Pause size={16} color="#fff" />
-                ) : (
-                  <Play size={16} color="#6366f1" />
-                )}
-              </TouchableOpacity>
-              
-              {!item.is_built_in && (
-                <>
-                  <TouchableOpacity 
-                    style={styles.actionButton}
-                    onPress={() => handleEditTrack(item)}
-                  >
-                    <Edit size={16} color="#6366f1" />
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.actionButton}
-                    onPress={() => handleDeleteTrack(item)}
-                  >
-                    <Trash2 size={16} color="#ef4444" />
-                  </TouchableOpacity>
-                </>
-              )}
-            </View>
-          )}
-        </View>
-
-        {isPlaying && (
-          <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${progress}%` }]} />
-          </View>
-        )}
-      </TouchableOpacity>
-    );
-  };
-
-  const renderMix = ({ item }: { item: Mix }) => (
-    <TouchableOpacity 
-      style={styles.itemCard}
-      onPress={() => handleMixPress(item.id)}
-    >
-      <View style={styles.itemInfo}>
-        <View style={styles.itemIcon}>
-          <Volume2 size={20} color="#fff" />
-        </View>
-        <View>
-          <Text style={styles.itemName}>{item.name}</Text>
-          <Text style={styles.itemSubtext}>{item.duration} minutes</Text>
-        </View>
-      </View>
-      
-      <View style={styles.itemMeta}>
-        {item.is_public && (
-          <View style={styles.categoryBadge}>
-            <Text style={styles.categoryText}>Public</Text>
-          </View>
-        )}
-        <View style={styles.itemActions}>
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => handleMixPress(item.id)}
-          >
-            <Volume2 size={16} color="#6366f1" />
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => handleEditMix(item)}
-          >
-            <Edit size={16} color="#6366f1" />
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => handleDeleteMix(item)}
-          >
-            <Trash2 size={16} color="#ef4444" />
-          </TouchableOpacity>
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
-
   const handleEditTrack = (track: Track) => {
-    console.log('Edit track:', track.id);
+    setEditDetails({
+      id: track.id,
+      name: track.name,
+      category: track.category,
+      is_built_in: track.is_built_in,
+      type: 'track'
+    });
+    setShowEditModal(true);
   };
 
   const handleDeleteTrack = async (track: Track) => {
@@ -692,16 +659,14 @@ export default function LibraryScreen() {
   };
 
   const handleEditMix = (mix: Mix) => {
-    router.push({
-      pathname: '/(tabs)/mixer2',
-      params: {
-        mixId: mix.id,
-        mixName: mix.name,
-        mixDuration: mix.duration.toString(),
-        mixIsPublic: mix.is_public.toString(),
-        from: '/(tabs)/library'
-      }
+    setEditDetails({
+      id: mix.id,
+      name: mix.name,
+      category: mix.category || 'mixes', // Ensure category is never undefined
+      is_built_in: mix.is_built_in || false,
+      type: 'mix'
     });
+    setShowEditModal(true);
   };
 
   const handleDeleteMix = async (mix: Mix) => {
@@ -759,6 +724,48 @@ export default function LibraryScreen() {
     }
   };
 
+  const handleUpdateItem = async () => {
+    try {
+      setIsLoading(true);
+      
+      if (editDetails.type === 'track') {
+        const { error } = await supabase
+          .from('audio_tracks')
+          .update({
+            name: editDetails.name,
+            category: editDetails.category,
+            is_built_in: editDetails.is_built_in
+          })
+          .eq('id', editDetails.id);
+
+        if (error) throw error;
+      } else {
+        // Update mix in mixes_v2 table
+        const { error: v2Error } = await supabase
+          .from('mixes_v2')
+          .update({
+            name: editDetails.name,
+            is_built_in: editDetails.is_built_in
+          })
+          .eq('id', editDetails.id);
+
+        if (v2Error) {
+          console.error('Error updating mix:', v2Error);
+          throw v2Error;
+        }
+      }
+
+      setShowEditModal(false);
+      fetchTracks();
+      fetchMixes();
+    } catch (err) {
+      console.error('Error updating item:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update item');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Get the current categories based on active tab
   const getCurrentCategories = (): string[] => {
     switch (activeTab) {
@@ -773,6 +780,153 @@ export default function LibraryScreen() {
     }
   };
 
+  // Filter tracks and mixes based on search query
+  const filteredTracks = tracks.filter(track =>
+    track.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const filteredMixes = mixes.filter(mix =>
+    mix.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const renderTrack = ({ item }: { item: Track }) => {
+    const isPlaying = playingTrackId === item.id;
+    const progress = playingProgress[item.id] || 0;
+
+    return (
+      <TouchableOpacity 
+        style={styles.itemCard}
+        onPress={() => handleTrackSelect(item)}
+      >
+        <View style={styles.itemInfo}>
+          <View style={[styles.itemIcon, isPlaying && styles.itemIconPlaying]}>
+            <Music2 size={20} color={isPlaying ? '#6366f1' : '#fff'} />
+          </View>
+          <View>
+            <Text style={styles.itemName}>{item.name}</Text>
+            {isPlaying && (
+              <Text style={styles.playingText}>Now Playing</Text>
+            )}
+          </View>
+        </View>
+
+        <View style={styles.itemMeta}>
+          <View style={styles.badgeContainer}>
+            <View style={styles.categoryBadge}>
+              <Text style={styles.categoryText}>{item.category}</Text>
+            </View>
+            {item.is_built_in && (
+              <View style={[styles.categoryBadge, styles.builtInBadge]}>
+                <Text style={styles.categoryText}>Built-in</Text>
+              </View>
+            )}
+          </View>
+
+          {!selectMode && (
+            <View style={styles.itemActions}>
+              <TouchableOpacity 
+                style={[styles.actionButton, isPlaying && styles.actionButtonActive]}
+                onPress={() => playSound(item)}
+                disabled={isLoading}
+              >
+                {isPlaying ? (
+                  <Pause size={16} color="#fff" />
+                ) : (
+                  <Play size={16} color="#6366f1" />
+                )}
+              </TouchableOpacity>
+              
+              {isAdmin && (
+                <TouchableOpacity 
+                  style={styles.actionButton}
+                  onPress={() => handleEditTrack(item)}
+                >
+                  <Edit size={16} color="#6366f1" />
+                </TouchableOpacity>
+              )}
+              
+              {(isAdmin || (!item.is_built_in && item.user_id === user?.id)) && (
+                <TouchableOpacity 
+                  style={styles.actionButton}
+                  onPress={() => handleDeleteTrack(item)}
+                >
+                  <Trash2 size={16} color="#ef4444" />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+
+        {isPlaying && (
+          <View style={styles.progressBar}>
+            <View style={[styles.progressFill, { width: `${progress}%` }]} />
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderMix = ({ item }: { item: Mix }) => (
+    <TouchableOpacity 
+      style={styles.itemCard}
+      onPress={() => handleMixPress(item.id)}
+    >
+      <View style={styles.itemInfo}>
+        <View style={styles.itemIcon}>
+          <Volume2 size={20} color="#fff" />
+        </View>
+        <View>
+          <Text style={styles.itemName}>{item.name}</Text>
+          <Text style={styles.itemSubtext}>{item.duration} minutes</Text>
+        </View>
+      </View>
+      
+      <View style={styles.itemMeta}>
+        <View style={styles.badgeContainer}>
+          <View style={styles.categoryBadge}>
+            <Text style={styles.categoryText}>{item.category || 'mixes'}</Text>
+          </View>
+          {item.is_built_in && (
+            <View style={[styles.categoryBadge, styles.builtInBadge]}>
+              <Text style={styles.categoryText}>Built-in</Text>
+            </View>
+          )}
+          {item.is_public && (
+            <View style={[styles.categoryBadge, { marginLeft: 8 }]}>
+              <Text style={styles.categoryText}>Public</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.itemActions}>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleMixPress(item.id)}
+          >
+            <Volume2 size={16} color="#6366f1" />
+          </TouchableOpacity>
+          
+          {isAdmin && (
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => handleEditMix(item)}
+            >
+              <Edit size={16} color="#6366f1" />
+            </TouchableOpacity>
+          )}
+          
+          {(isAdmin || (!item.is_built_in && item.user_id === user?.id)) && (
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => handleDeleteMix(item)}
+            >
+              <Trash2 size={16} color="#ef4444" />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
   const renderContent = () => {
     if (isLoading) {
       return (
@@ -782,10 +936,33 @@ export default function LibraryScreen() {
       );
     }
 
+    // Show both tracks and mixes for "all" category in "built-in" tab
+    if (activeTab === 'built-in' && activeCategory === 'all') {
+      const combinedData: (Track | Mix)[] = [...filteredTracks, ...filteredMixes];
+      return (
+        <FlatList
+          data={combinedData}
+          renderItem={({ item }) => {
+            // Check if item is a Track by checking for the url property
+            if ('url' in item && 'category_id' in item) {
+              return renderTrack({ item: item as Track });
+            } else {
+              return renderMix({ item: item as Mix });
+            }
+          }}
+          keyExtractor={item => item.id}
+          contentContainerStyle={styles.list}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No items found</Text>
+          }
+        />
+      );
+    }
+
     if (activeCategory === 'mixes' || (activeTab === 'my-library' && activeCategory === 'all')) {
       return (
         <FlatList
-          data={mixes}
+          data={filteredMixes}
           renderItem={renderMix}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.list}
@@ -798,7 +975,7 @@ export default function LibraryScreen() {
 
     return (
       <FlatList
-        data={tracks}
+        data={filteredTracks}
         renderItem={renderTrack}
         keyExtractor={item => item.id}
         contentContainerStyle={styles.list}
@@ -811,9 +988,22 @@ export default function LibraryScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <View style={styles.content}>
+      <View style={styles.header}>
         <Text style={styles.title}>Library</Text>
-        
+      </View>
+
+      {/* Search Bar */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search tracks and mixes..."
+          placeholderTextColor="#666"
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+      </View>
+
+      <View style={styles.content}>
         <View style={{gap: 0, marginBottom: 0}}>
           {/* Tabs */}
           <ScrollView 
@@ -1025,6 +1215,108 @@ export default function LibraryScreen() {
         </View>
       </Modal>
       
+      {/* Add Edit Modal */}
+      <Modal
+        visible={showEditModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowEditModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.editModal}>
+            <Text style={styles.modalTitle}>
+              Edit {editDetails.type === 'track' ? 'Track' : 'Mix'}
+            </Text>
+            
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Name</Text>
+              <TextInput
+                style={styles.input}
+                value={editDetails.name}
+                onChangeText={(text) => setEditDetails(prev => ({ ...prev, name: text }))}
+                placeholder="Enter name"
+                placeholderTextColor="#666"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Category</Text>
+              <TouchableOpacity
+                style={styles.dropdownButton}
+                onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
+              >
+                <Text style={styles.dropdownButtonText}>
+                  {editDetails.category ? editDetails.category.charAt(0).toUpperCase() + editDetails.category.slice(1) : 'Select Category'}
+                </Text>
+                <ChevronDown size={20} color="#666" />
+              </TouchableOpacity>
+              
+              {showCategoryDropdown && (
+                <View style={styles.dropdownContainer}>
+                  <ScrollView style={styles.dropdownList}>
+                    {BUILT_IN_CATEGORIES.map(category => (
+                      <TouchableOpacity
+                        key={category}
+                        style={[
+                          styles.dropdownItem,
+                          editDetails.category === category && styles.dropdownItemSelected
+                        ]}
+                        onPress={() => {
+                          setEditDetails(prev => ({ ...prev, category }));
+                          setShowCategoryDropdown(false);
+                        }}
+                      >
+                        <Text style={[
+                          styles.dropdownItemText,
+                          editDetails.category === category && styles.dropdownItemTextSelected
+                        ]}>
+                          {category.charAt(0).toUpperCase() + category.slice(1)}
+                        </Text>
+                        {editDetails.category === category && (
+                          <Check size={16} color="#fff" />
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Include in Built-in Sounds</Text>
+              <Switch
+                value={editDetails.is_built_in}
+                onValueChange={(value) => setEditDetails(prev => ({ ...prev, is_built_in: value }))}
+                trackColor={{ false: '#333', true: '#6366f1' }}
+                thumbColor="#fff"
+              />
+            </View>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={() => {
+                  setShowEditModal(false);
+                  setShowCategoryDropdown(false);
+                }}
+              >
+                <Text style={styles.modalButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.saveButton]}
+                onPress={() => {
+                  handleUpdateItem();
+                  setShowCategoryDropdown(false);
+                }}
+              >
+                <Text style={styles.modalButtonText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
       {error && (
         <Text style={styles.errorText}>{error}</Text>
       )}
@@ -1037,18 +1329,33 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
+  header: {
+    padding: 16,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  searchContainer: {
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    backgroundColor: '#000',
+  },
+  searchInput: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    padding: 12,
+    color: '#fff',
+    fontSize: 16,
+  },
   content: {
     flex: 1,
     padding: 16,
   },
   contentContainer: {
     flex: 1,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#6366f1',
-    marginBottom: 8,
   },
   tabsContainer: {
     paddingHorizontal: 20,
@@ -1353,5 +1660,72 @@ const styles = StyleSheet.create({
   },
   list: {
     padding: 20,
+  },
+  editModal: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 20,
+    width: '100%',
+    maxWidth: 400,
+  },
+  builtInBadge: {
+    backgroundColor: '#818cf8',
+    marginLeft: 8,
+  },
+  saveButton: {
+    backgroundColor: '#6366f1',
+  },
+  dropdownButton: {
+    backgroundColor: '#262626',
+    borderRadius: 8,
+    padding: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dropdownButtonText: {
+    color: '#fff',
+    fontSize: 16,
+  },
+  dropdownContainer: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#262626',
+    borderRadius: 8,
+    marginTop: 4,
+    maxHeight: 200,
+    zIndex: 1000,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  dropdownList: {
+    maxHeight: 200,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  dropdownItemSelected: {
+    backgroundColor: '#6366f1',
+  },
+  dropdownItemText: {
+    color: '#fff',
+    fontSize: 16,
+  },
+  dropdownItemTextSelected: {
+    fontWeight: '600',
+  },
+  badgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 });
